@@ -38,6 +38,8 @@ import xarray
 
 import tqdm
 
+import glob
+
 #%% functions to specify bedrock elevation, initial thickness, and initial velocity
 # later will add an initial sediment thickness
 def bedrock(x, Q):
@@ -241,7 +243,7 @@ def regrid(n, L, L_new, h, u):
     
     # Initialize mesh and mesh spaces
     mesh1d_new = firedrake.IntervalMesh(n, L_new)
-    mesh_new = firedrake.ExtrudedMesh(mesh1d_new, layers=1, name="mesh")
+    mesh_new = firedrake.ExtrudedMesh(mesh1d_new, layers=1)
     Q_new = firedrake.FunctionSpace(mesh_new, "CG", 2, vfamily="R", vdegree=0)
     V_new = firedrake.FunctionSpace(mesh_new, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
     
@@ -270,12 +272,14 @@ def regrid(n, L, L_new, h, u):
 
 
 #%% 
-L = 40e3 # domain length [m]
-n = 72 # number of grid points 
 
-# initialize mesh
-mesh1d = firedrake.IntervalMesh(n, L)
-mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
+files = sorted(glob.glob('./results/spinup/*'))
+
+with firedrake.CheckpointFile(files[-1], "r") as checkpoint:
+    mesh = checkpoint.load_mesh(name="mesh")
+    h = checkpoint.load_function(mesh, name="thickness")
+    s = checkpoint.load_function(mesh, name="surface")
+    u = checkpoint.load_function(mesh, name="velocity")
 
 # Set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh.
 Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
@@ -288,9 +292,6 @@ z = firedrake.interpolate(z_sc, Q)
 
 # create initial geometry [NOT YET INCLUDING SEDIMENT]
 b, tideLine = bedrock(x, Q) # use bedrock function to determine initial bedrock geometry
-h = initial_thickness(x, Q) # use constant gradient for initial thickness                 
-s = icepack.compute_surface(thickness = h, bed = b) # initial surface elevation
-u = initial_velocity(x, V)
 
 
 fig, axes = plt.subplots(2, 1)
@@ -389,6 +390,9 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(h, name="thickness")
         checkpoint.save_function(s, name="surface")
         checkpoint.save_function(u, name="velocity")
+    
+    
+   
 
 
 
