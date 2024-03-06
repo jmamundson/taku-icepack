@@ -47,8 +47,10 @@ class params:
     '''
     
     def __init__(self):
+        self.n = 72 # number of grid points
         self.b_max = 4 # maximum mass balance rate [m a^{-1}]
-        self.b_sea = -10 # mass balance rate at sea level [m a^{-1}]
+        self.b_gradient = 0.01 # mass balance gradient
+        # self.b_sea = -10 # mass balance rate at sea level [m a^{-1}]
         self.ELA = 800 # equilbrium line altitude [m]
 
 
@@ -144,11 +146,12 @@ def massBalance(s, Q, param):
     '''
     
     b_max = param.b_max
-    b_sea = param.b_sea
+    b_gradient = param.b_gradient
     ELA = param.ELA
     
     k = 0.005 # smoothing factor
-    b_gradient = -b_sea/ELA # mass balance gradient
+    # b_sea = -b_gradient*ELA
+    
     z_threshold = b_max/b_gradient + ELA # location where unsmoothed balance rate switches from nonzero to zero
     
     a = firedrake.interpolate(b_gradient*((s-ELA) - 1/(2*k) * ln(1+exp(2*k*(s - z_threshold)))), Q)

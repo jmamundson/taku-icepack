@@ -20,9 +20,6 @@ import icepack.models.hybrid
 from firedrake import max_value, min_value
 from firedrake import conditional, eq, ne, le, ge, lt, gt
 
-
-from scipy.interpolate import interp1d
-
 import tqdm
 
 import func
@@ -32,10 +29,9 @@ param = params()
     
 #%% 
 L = 40e3 # domain length [m]
-n = 72 # number of grid points 
 
 # initialize mesh
-mesh1d = firedrake.IntervalMesh(n, L)
+mesh1d = firedrake.IntervalMesh(param.n, L)
 mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
 
 # Set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh.
@@ -108,14 +104,16 @@ for step in tqdm.trange(num_timesteps):
     L_new = np.max([func.find_endpoint_haf(L, h, s, Q), tideLine]) 
     
     if L_new > tideLine: # if tidewater glacier, always need to regrid
-        Q, V, h, u, b, s, mesh = func.regrid(n, L, L_new, h, u) # regrid velocity and thickness
+        Q, V, h, u, b, s, mesh = func.regrid(param.n, L, L_new, h, u) # regrid velocity and thickness
                 
     elif (L_new==tideLine) and (L_new<L): # just became land-terminating, need to regrid
-        Q, V, h, u, b, s, mesh = func.regrid(n, L, L_new, h, u) # regrid velocity and thickness
-        h = firedrake.interpolate(conditional(h<constant.hmin, constant.hmin, h), Q) # don't allow the ice to thin to less than 10 m
+        Q, V, h, u, b, s, mesh = func.regrid(param.n, L, L_new, h, u) # regrid velocity and thickness
+        h.interpolate(max_value(h, constant.hmin))
+        # h = firedrake.interpolate(conditional(h<constant.hmin, constant.hmin, h), Q) # don't allow the ice to thin to less than 10 m
         
     else: # land-terminating and was previously land-terminating, only need to ensure minimum thickness
-        h = firedrake.interpolate(conditional(h<constant.hmin, constant.hmin, h), Q) # don't allow the ice to thin to less than 10 m
+        # h = firedrake.interpolate(conditional(h<constant.hmin, constant.hmin, h), Q) # don't allow the ice to thin to less than 10 m
+        h.interpolate(max_value(h, constant.hmin))
         s = icepack.compute_surface(thickness = h, bed = b)
         
     L = L_new # reset the length
@@ -135,7 +133,7 @@ for step in tqdm.trange(num_timesteps):
     
     
     #print(h.dat.data[-1] + z_b.dat.data[-1]*rho_water/rho_ice)
-    print(h.dat.data[0])
+    #print(h.dat.data[0])
     
     if step%10==0:
         firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0]);
@@ -150,6 +148,7 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(h, name="thickness")
         checkpoint.save_function(s, name="surface")
         checkpoint.save_function(u, name="velocity")
+        checkpoint.save_function(b, name='bed')
 
 
 
