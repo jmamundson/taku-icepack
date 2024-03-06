@@ -356,7 +356,7 @@ def schoof_approx_friction(**kwargs):
 def sedTransport(a, h, x, Q):
     
     h_eff = 0.1
-    c = 1
+    c = 2e-12
     w = 500 # settling velocity [m a^{-1}]
     hs = 1 # sediment thickness
     
@@ -368,20 +368,24 @@ def sedTransport(a, h, x, Q):
     
     Qw = cumtrapz(meltRate.dat.data, dx=dx) # subglacial discharge, calculated from balance rate
     
-    # erosionRate = c * Qw**3/h_eff**2 * sed 
+    erosionRate = c * Qw**2/h_eff**3 * hs
     
     # solve for sediment transport
-    a = -Qw
+    a = w*dx+Qw
     a[0] = 1
 
-    a_right = Qw[:-1] + w*dx
-    a_right[0] = 0
+    a_left = -Qw[:-1]
 
-    diagonals = [a,a_right]
-    D = sparse.diags(diagonals,[0,1]).toarray()
+    diagonals = [a_left,a]
+    D = sparse.diags(diagonals,[-1,0]).toarray()
 
-    f = dx*c*(Qw/h_eff)*hs
+    f = erosionRate
     f[0] = 0
 
 
     Qs = np.linalg.solve(D,f) # solve for granular fluidity
+    
+    depositionRate = np.zeros(len(Qs))
+    depositionRate[Qw>0] = w*Qs[Qw>0]/Qw[Qw>0]
+    
+    dhsdt = depositionRate-erosionRate
