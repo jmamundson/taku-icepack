@@ -9,9 +9,11 @@ Created on Wed Mar  6 09:05:29 2024
 import numpy as np
 
 import firedrake
-from firedrake import exp, ln, inner, sqrt
+from firedrake import exp, ln, inner, sqrt, conditional
 
 from scipy.interpolate import interp1d
+from scipy.integrate import cumtrapz
+from scipy import sparse
 
 import icepack
 
@@ -40,6 +42,7 @@ class constants:
         self.C = firedrake.Constant(0.1) # friction coefficient
         self.hmin = 10 # minimum thickness [m]
 
+constant = constants()
 
 class params:
     '''
@@ -124,6 +127,31 @@ def initial_velocity(x, V):
     u0 = firedrake.interpolate(u, V) # Vector function space
 
     return(u0)
+
+
+def initial_sediment(b, x, V):
+    '''
+    
+
+    Parameters
+    ----------
+    x : TYPE
+        DESCRIPTION.
+    V : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    None.
+
+    '''
+
+    bedInterpolator = interp1d(b.dat.data, x.dat.data)
+    tideLine = bedInterpolator(0)
+
+    sed0 = firedrake.interpolate
+
+    return(sed0)
 
 
 def massBalance(s, Q, param):
@@ -324,3 +352,36 @@ def schoof_approx_friction(**kwargs):
     )
 
 
+#%% sediment transport solvers
+def sedTransport(a, h, x, Q):
+    
+    h_eff = 0.1
+    c = 1
+    w = 500 # settling velocity [m a^{-1}]
+    hs = 1 # sediment thickness
+    
+    iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
+    meltRate = icepack.interpolate(conditional(a>0, 0, -a), Q)
+    meltRate = icepack.interpolate(iceMask*meltRate, Q)
+
+    dx = np.array(x.dat.data[0]) # this should be 1, see issue stated above about first two points getting swapped
+    
+    Qw = cumtrapz(meltRate.dat.data, dx=dx) # subglacial discharge, calculated from balance rate
+    
+    # erosionRate = c * Qw**3/h_eff**2 * sed 
+    
+    # solve for sediment transport
+    a = -Qw
+    a[0] = 1
+
+    a_right = Qw[:-1] + w*dx
+    a_right[0] = 0
+
+    diagonals = [a,a_right]
+    D = sparse.diags(diagonals,[0,1]).toarray()
+
+    f = dx*c*(Qw/h_eff)*hs
+    f[0] = 0
+
+
+    Qs = np.linalg.solve(D,f) # solve for granular fluidity

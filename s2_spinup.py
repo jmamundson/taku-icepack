@@ -109,10 +109,8 @@ for step in tqdm.trange(num_timesteps):
     elif (L_new==tideLine) and (L_new<L): # just became land-terminating, need to regrid
         Q, V, h, u, b, s, mesh = func.regrid(param.n, L, L_new, h, u) # regrid velocity and thickness
         h.interpolate(max_value(h, constant.hmin))
-        # h = firedrake.interpolate(conditional(h<constant.hmin, constant.hmin, h), Q) # don't allow the ice to thin to less than 10 m
         
     else: # land-terminating and was previously land-terminating, only need to ensure minimum thickness
-        # h = firedrake.interpolate(conditional(h<constant.hmin, constant.hmin, h), Q) # don't allow the ice to thin to less than 10 m
         h.interpolate(max_value(h, constant.hmin))
         s = icepack.compute_surface(thickness = h, bed = b)
         

@@ -6,10 +6,11 @@
 # - interpolate (last two points with xarray?)
 # - first two points swapped with depth average
 # - degree two or degree 4 function space?
-
+# - some issue with transition from land-terminating to tidewater
 
 import firedrake
 from firedrake import sqrt, inner, ln, exp
+from firedrake import assemble, dx # for computing integrals
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -76,8 +77,8 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 100
-timesteps_per_year = 10
+years = 1000
+timesteps_per_year = 2
 snapshot_location = [0, 50, 100, 150, 200]
 snapshots = []
 
@@ -137,7 +138,7 @@ for step in tqdm.trange(num_timesteps):
     
     
     #print(h.dat.data[-1] + z_b.dat.data[-1]*rho_water/rho_ice)
-    print(h.dat.data[0])
+    # print(h.dat.data[0])
     
     if step%10==0:
         firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0]);
