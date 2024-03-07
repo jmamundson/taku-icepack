@@ -1,3 +1,5 @@
+# implement argsort!!!
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -37,7 +39,7 @@ class constants:
     '''
     
     def __init__(self):
-        self.Temperature = firedrake.Constant(273.0) # -1 deg C
+        self.Temperature = firedrake.Constant(273.15) # -1 deg C
         self.A = icepack.rate_factor(self.Temperature) # flow rate factor
         self.C = firedrake.Constant(0.1) # friction coefficient
         self.hmin = 10 # minimum thickness [m]
@@ -55,6 +57,20 @@ class params:
         self.b_gradient = 0.01 # mass balance gradient
         # self.b_sea = -10 # mass balance rate at sea level [m a^{-1}]
         self.ELA = 800 # equilbrium line altitude [m]
+
+
+class paramsSed:
+    '''
+    Parameters for the sediment transport model.
+    '''
+    
+    def __init__(self):
+        self.h_eff = 0.1 # effective water thickness [m]
+        self.c = 2e-14
+        self.w = 500 # settling velocity [m a^{-1}]
+        self.k = 5000 # sediment diffusivity
+
+paramSed = paramsSed()
 
 
 #%% functions to specify bedrock elevation, initial thickness, and initial velocity
@@ -352,40 +368,118 @@ def schoof_approx_friction(**kwargs):
     )
 
 
-#%% sediment transport solvers
-def sedTransport(a, h, x, Q):
-    
-    h_eff = 0.1
-    c = 2e-12
-    w = 500 # settling velocity [m a^{-1}]
-    hs = 1 # sediment thickness
-    
+#%% sediment transport solver
+
+def initBedArray(L):
+    '''
+    Create grid and initial values of sediment model
+
+    Parameters
+    ----------
+    L : domain length [m]
+
+    Returns
+    -------
+    xBed : coordinates of the bed model [m]
+    zBedrock : bedrock elevation at xBed coordinates [m]
+    Hsediment : sediment thickness at xBed coordinates [m]
+
+    '''
+    xBed = np.linspace(0, L, 1001, endpoint=True)
+    zBedrock = 1500*np.exp(-(xBed+5000)**2 / (2*15000**2)) - 400 # make the same as bedrock
+
+    # determine x-location of start of sediment
+    bedInterpolator = interp1d(zBedrock, xBed)
+    sedLevelInit = bedInterpolator(-50) # sediment fills fjord to 50 m depth
+
+    # initial sediment thickness
+    Hsediment = np.zeros(len(zBedrock)) # sediment thickness
+    Hsediment[xBed>sedLevelInit] = -50-zBedrock[xBed>sedLevelInit]
+
+    return xBed, zBedrock, Hsediment
+
+
+def sedTransport(x, h, a, Q, xBed, zBedrock, Hsediment, dt):
+    '''
+    Calculate new bed elevation. May be better to turn this into a class?
+
+    Parameters
+    ----------
+    x : function containing longitudinal position of glacier grid coordinates
+    h : firedrake function for the glacier thickness
+    a : firedrake function for the mass balance rate
+    xBed : longitudinal coordinates of bed model [m]
+    zBedrock : bedrock elevation of bed model [m]
+    Hsediment : sediment thickness [m]
+    dt : time step size [a]
+
+    Returns
+    -------
+    b : firedrak function for the bed elevation
+    Hsediment : new sediment thickness in the bed model
+    '''
+
+    # create numpy array of glacier x-coordinates; make sure they are properly 
+    # sorted
+    index = np.argsort(x.dat.data)
+    xGlacier = x.dat.data[index]
+
+    # mask out areas where the ice is less than 10 m thick, then extract melt rate
+    # at glacier x-coordinates
     iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
     meltRate = icepack.interpolate(conditional(a>0, 0, -a), Q)
     meltRate = icepack.interpolate(iceMask*meltRate, Q)
+    meltRate = meltRate.dat.data[index]
 
-    dx = np.array(x.dat.data[0]) # this should be 1, see issue stated above about first two points getting swapped
+    meltInterpolator = interp1d(xGlacier, meltRate, fill_value=np.array([0]), bounds_error=False)
+    meltBed = meltInterpolator(xBed)
+
+    # determine subglacial charge
+    dx = xBed[1] 
+    Qw = cumtrapz(meltBed, dx=dx, initial=0) # subglacial discharge, calculated from balance rate
+    Qw = Qw*meltBed # this is to make sure that there is no subglacial discharge in the ocean
+
+
+    delta_s = [np.min((x, 1)) for x in Hsediment] # erosion goes to 0 if sediment thickness is 0
+    erosionRate = paramSed.c * Qw**2/paramSed.h_eff**3 * delta_s
+
+    # solve for sediment transport with left-sided difference
+    d = Qw + dx*paramSed.w
+    d[0] = 1
+    d[-1] = 1
     
-    Qw = cumtrapz(meltRate.dat.data, dx=dx) # subglacial discharge, calculated from balance rate
+    d_left = -Qw[1:]
+    d_left[-1] = 0
     
-    erosionRate = c * Qw**2/h_eff**3 * hs
+    diagonals = [d_left, d]
+    D = sparse.diags(diagonals, [-1,0]).toarray()
     
-    # solve for sediment transport
-    a = w*dx+Qw
-    a[0] = 1
-
-    a_left = -Qw[:-1]
-
-    diagonals = [a_left,a]
-    D = sparse.diags(diagonals,[-1,0]).toarray()
-
-    f = erosionRate
+    f = dx*Qw*erosionRate
     f[0] = 0
-
-
-    Qs = np.linalg.solve(D,f) # solve for granular fluidity
+    f[1] = 0
     
+    Qs = np.linalg.solve(D,f)
+
     depositionRate = np.zeros(len(Qs))
-    depositionRate[Qw>0] = w*Qs[Qw>0]/Qw[Qw>0]
+    depositionRate[Qw>0] = paramSed.w*Qs[Qw>0]/Qw[Qw>0]
+
+    zBed = Hsediment+zBedrock # elevation of glacier bed
+
+    # calculate bed curvature for hillslope diffusion; dz^2/dx^2(zBed)
+    zBed_curvature = (zBed[2:]-2*zBed[1:-1]+zBed[:-2])/dx**2
+    zBed_left = (zBed[2]-2*zBed[1]+zBed[0])/dx**2
+    zBed_right = (zBed[-1]-2*zBed[-2]+zBed[-3])/dx**2
+
+    zBed_curvature = np.concatenate(([zBed_left], zBed_curvature, [zBed_right]))
+
+    Hsediment = Hsediment + (depositionRate - erosionRate)*dt # + paramSed.k*zBed_curvature)*dt # new sediment thickness
+    dHdt = depositionRate - erosionRate #+ paramSed.k*zBed_curvature
+
+    zBed = Hsediment+zBedrock # new bed elevation in bed model coordinates
+
+    zBed_interpolator = interp1d(xBed, zBed) # create interpolator to put bed elevation into a firedrake function
+
+    zBed_xarray = xarray.DataArray(zBed_interpolator(xGlacier), [xGlacier], 'x')
+    b = icepack.interpolate(zBed_xarray, Q)
     
-    dhsdt = depositionRate-erosionRate
+    return b, Hsediment, dHdt

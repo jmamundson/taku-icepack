@@ -35,7 +35,7 @@ import glob
 
 files = sorted(glob.glob('./results/spinup/*'))
 
-with firedrake.CheckpointFile(files[-1], "r") as checkpoint:
+with firedrake.CheckpointFile(files[10], "r") as checkpoint:
     mesh = checkpoint.load_mesh(name="mesh")
     h = checkpoint.load_function(mesh, name="thickness")
     s = checkpoint.load_function(mesh, name="surface")
@@ -51,8 +51,9 @@ z = firedrake.interpolate(z_sc, Q)
 
 L = np.max(x.dat.data)
 
-# create initial geometry [NOT YET INCLUDING SEDIMENT]
-b, tideLine = func.bedrock(x, Q) # use bedrock function to determine initial bedrock geometry
+# create initial geometry
+b, tideLine = func.bedrock(x, Q) # firedrake bed function
+xBed, zBedrock, Hsediment = func.initBedArray(40e3) # initialize bed and sediment thickness in bed model
 
 
 fig, axes = plt.subplots(2, 1)
@@ -83,7 +84,7 @@ snapshot_location = [0, 50, 100, 150, 200]
 snapshots = []
 
 dt = 1/timesteps_per_year
-num_timesteps = years * timesteps_per_year
+num_timesteps = 1 #years * timesteps_per_year
 
 color_id = np.linspace(0,1,num_timesteps)
 
@@ -105,6 +106,9 @@ for step in tqdm.trange(num_timesteps):
         thickness = h,
         velocity = u,
         accumulation = a)
+    
+    # erode the bed; what is the right order of doing these updates?
+    b, Hsediment, dHdt = func.sedTransport(x, h, a, Q, xBed, zBedrock, Hsediment, dt)
     
     s = icepack.compute_surface(thickness = h, bed = b)
     
