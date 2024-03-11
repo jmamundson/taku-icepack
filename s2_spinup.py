@@ -28,9 +28,8 @@ constant = constants()
 param = params()
     
 #%% 
-L = 40e3 # domain length [m]
-
 # initialize mesh
+L = param.L
 mesh1d = firedrake.IntervalMesh(param.n, L)
 mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
 
@@ -48,6 +47,7 @@ b, tideLine = func.bedrock(x, Q) # use bedrock function to determine initial bed
 h = func.initial_thickness(x, Q) # use constant gradient for initial thickness                 
 s = icepack.compute_surface(thickness = h, bed = b) # initial surface elevation
 u = func.initial_velocity(x, V)
+
 
 
 fig, axes = plt.subplots(2, 1)
