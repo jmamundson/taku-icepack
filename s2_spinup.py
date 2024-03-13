@@ -48,7 +48,9 @@ h = func.initial_thickness(x, Q) # use constant gradient for initial thickness
 s = icepack.compute_surface(thickness = h, bed = b) # initial surface elevation
 u = func.initial_velocity(x, V)
 
-
+# initialize sediment model with sediment thickness of 0
+sed = func.sedModel(param.L,param.sedDepth)
+sed.H = 0*sed.H
 
 fig, axes = plt.subplots(2, 1)
 axes[0].set_xlabel('Longitudinal Coordinate [m]')
@@ -72,7 +74,7 @@ solver = icepack.solvers.FlowSolver(model, **opts)
 
 
 years = 100
-timesteps_per_year = 2
+timesteps_per_year = 10
 snapshot_location = [0, 50, 100, 150, 200]
 snapshots = []
 
@@ -104,10 +106,10 @@ for step in tqdm.trange(num_timesteps):
     L_new = np.max([func.find_endpoint_haf(L, h, s, Q), tideLine]) 
     
     if L_new > tideLine: # if tidewater glacier, always need to regrid
-        Q, V, h, u, b, s, mesh = func.regrid(param.n, L, L_new, h, u) # regrid velocity and thickness
+        Q, V, h, u, b, s, mesh, x = func.regrid(param.n, L, L_new, h, u, sed) # regrid velocity and thickness
                 
     elif (L_new==tideLine) and (L_new<L): # just became land-terminating, need to regrid
-        Q, V, h, u, b, s, mesh = func.regrid(param.n, L, L_new, h, u) # regrid velocity and thickness
+        Q, V, h, u, b, s, mesh, x = func.regrid(param.n, L, L_new, h, u, sed) # regrid velocity and thickness
         h.interpolate(max_value(h, constant.hmin))
         
     else: # land-terminating and was previously land-terminating, only need to ensure minimum thickness

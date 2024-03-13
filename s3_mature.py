@@ -83,8 +83,8 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 1001
-timesteps_per_year = 1
+years = 50
+timesteps_per_year = 20
 snapshot_location = [0, 50, 100, 150, 200]
 snapshots = []
 
@@ -93,7 +93,7 @@ num_timesteps = years * timesteps_per_year
 
 color_id = np.linspace(0,1,num_timesteps)
 
-param.ELA = 550 # lower the ELA
+param.ELA = 500 # lower the ELA
 
 length = np.zeros(num_timesteps+1)
 length[0] = L
@@ -116,7 +116,7 @@ for step in tqdm.trange(num_timesteps):
         accumulation = a)
     
     # erode the bed; what is the right order of doing these updates?
-    b = sed.sedTransport(x, h, a, Q, dt)
+    b = sed.sedTransportImplicit(x, h, a, Q, dt)
     
     s = icepack.compute_surface(thickness = h, bed = b)
     
@@ -148,14 +148,6 @@ for step in tqdm.trange(num_timesteps):
      
     solver = icepack.solvers.FlowSolver(model, **opts)
 
-    # mesh1d = firedrake.IntervalMesh(param.n, L)
-    # mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
-    # # Set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh.
-    # Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
-    # V = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
-    # x_sc, z_sc = firedrake.SpatialCoordinate(mesh)
-    # x = firedrake.interpolate(x_sc, Q)
-    # z = firedrake.interpolate(z_sc, Q)
 
 
     # z_b = firedrake.interpolate(s - h, Q) # glacier bottom
@@ -164,7 +156,7 @@ for step in tqdm.trange(num_timesteps):
     #print(h.dat.data[-1] + z_b.dat.data[-1]*rho_water/rho_ice)
     # print(h.dat.data[0])
     
-    if step%1==0:
+    if step%10==0:
         firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0,0]);
         firedrake.plot(icepack.depth_average(s), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
         firedrake.plot(icepack.depth_average(b), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
@@ -184,9 +176,9 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(u, name="velocity")
     
 
-plt.figure()
+# plt.figure()
 # plt.plot(sed.x, sed.erosionRate, sed.x, sed.depositionRate, sed.x, sed.hillslope)
-plt.plot(sed.x, sed.H+sed.zBedrock)
+# plt.plot(sed.x, sed.H+sed.zBedrock)
 # plt.plot(x.dat.data, b.dat.data)
 
 
