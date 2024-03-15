@@ -1,14 +1,8 @@
 # sediment model not working with hillslope diffusion if grid size too small?
 # hillslope diffusion not allowing for erosion?
 # need to increase water flux?
+# model behaves better with height above flotation criterion (why?) or just use floatation criteria for initial spin up?
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Mar  6 09:05:29 2024
-
-@author: jason
-"""
 
 import numpy as np
 
@@ -26,7 +20,7 @@ from scipy.optimize import root
 
 #%% basic constants parameters needed for the model
 
-# Import some constants from icepack [NEED TO CHECK UNITS]
+# Import some constants from icepack
 from icepack.constants import(
     ice_density as rho_ice,           # ρ_I | 9.21e-19
     water_density as rho_water,       # ρ_W | 1.03e-18
@@ -41,9 +35,9 @@ class constants:
     '''
     
     def __init__(self):
-        self.Temperature = firedrake.Constant(273.15) # -1 deg C
+        self.Temperature = firedrake.Constant(273.15) # temperate ice = 0 deg C
         self.A = icepack.rate_factor(self.Temperature) # flow rate factor
-        self.C = firedrake.Constant(0.1) # friction coefficient
+        self.C = firedrake.Constant(0.2) # friction coefficient [good value here?]
         self.hmin = 10 # minimum thickness [m]
 
 constant = constants()
@@ -55,12 +49,12 @@ class params:
     
     def __init__(self):
         self.n = 200 # number of grid points
+        self.dt = 0.1 # time step size [a]
         self.L = 40e3 # initial domain length [m]
         self.sedDepth = 50 # depth to sediment, from sea level, prior to advance scenario [m]
         self.b_max = 4 # maximum mass balance rate [m a^{-1}]
         self.b_gradient = 0.01 # mass balance gradient
-        # self.b_sea = -10 # mass balance rate at sea level [m a^{-1}]
-        self.ELA = 600 # equilbrium line altitude [m]
+        self.ELA = 1000 # equilbrium line altitude [m]
 
 param = params()
 
@@ -80,9 +74,30 @@ paramSed = paramsSed()
 
 #%% functions to specify bedrock elevation, initial thickness, and initial velocity
 
+def bedrock_geometry(x):
+    '''
+    Describes the bedrock geometry.
+
+    Parameters
+    ----------
+    x : longitudinal position; can be a firedrake function or an array [m]
+
+    Returns
+    -------
+    zb : bed elevation [m]
+    '''
+    
+    if isinstance(x, np.ndarray)==False:
+        zb = 2500*exp(-(x+5000)**2 / (2*15000**2)) - 400
+    else:
+        zb = 2500*np.exp(-(x+5000)**2 / (2*15000**2)) - 400
+    
+    return(zb)
+    
+
 def bedrock(x, Q):
     '''
-    Produces a longitudinal bedrock profile.
+    Returns a longitudinal bedrock profile.
 
     Parameters
     ----------
@@ -93,9 +108,9 @@ def bedrock(x, Q):
     -------
     b : firedrake function that contains the bed elevation at the grid points
     tideLine : location where the bedrock intersects sea level
-
     '''
-    zb = 1500*exp(-(x+5000)**2 / (2*15000**2)) - 400
+    
+    zb = bedrock_geometry(x)
     
     b = firedrake.interpolate(zb, Q)
     
@@ -105,6 +120,33 @@ def bedrock(x, Q):
     
     return(b, tideLine)    
     
+
+def width(x, Q):
+    '''
+    Returns the valley width as a function of longitudinal position. 
+
+    Parameters
+    ----------
+    x : firedrake function that contains the longitudinal coordinates of the grid points
+    Q : firedrake function space used for scalars
+
+    Returns
+    -------
+    W : firedrake function that contains the valley width
+    '''
+    
+    k = 5 # smoothing parameter
+    x_step = 10e3 # location of step [m]
+    w_fjord = 2e3 # fjord width [m]
+    w_max = w_fjord + 3e3 # maximum valley width [m]
+    
+    # using a logistic function, which makes the fjord walls roughly parallel
+    w_array = w_max * (1 - 1 / (1+exp(-k*(x-x_step)/x_step))) + w_fjord
+    
+    w = firedrake.interpolate(w_array, Q)
+    
+    return(w)
+
 
 def initial_thickness(x, Q):
     '''
@@ -121,7 +163,7 @@ def initial_thickness(x, Q):
 
     '''
     
-    h_divide, h_terminus = 500, 200 # thickness at the divide and the terminus [m]
+    h_divide, h_terminus = 500, 300 # thickness at the divide and the terminus [m]
     h = h_divide - (h_divide-h_terminus) * x/x.dat.data[-1] # thickness profile [m]
     h0 = firedrake.interpolate(h, Q)
 
@@ -140,7 +182,6 @@ def initial_velocity(x, V):
     Returns
     -------
     u0 : firedrake function that contains the initial velocity at the grid points
-
     '''
     
     u_divide, u_terminus = 0, 500 # velocity at the divide and the terminus [m/yr]
@@ -150,23 +191,30 @@ def initial_velocity(x, V):
     return(u0)
 
 
-def massBalance(s, Q, param):
+def massBalance(x, s, u, h, w, param):
     '''
-    Mass balance profile. Returns function space for the mass balance.
+    Mass balance profile. Returns function space for the "adjusted" mass 
+    balance rate. For a flow line model,
+    
+    dh/dt = a - 1/w * d/dx(uhw) = a - d/dx(uh) - uh/w * dw/dx
+    
+    This code combines a - uh/w * dw/dx into one term, the adjusted mass
+    balance rate, so that the prognostic solver doesn't need to worry about
+    variations in glacier width.
 
     Parameters
     ----------
-    s : firedrake function for the surface elevation profile
-    Q : firedrake function space for the surface elevation profile
+    x, s, u, h, w : firedrake functions for the longitudinal coordinates,
+        surface elevation, velocity, thickness, and width
     param : class instance that contains: 
         param.b_max : maximum mass balance rate (at high elevations) [m a^{-1}]
-        param.b_sea : mass balance rate at sea level [m a^{-1}]
+        param.b_gradient : mass balance gradient [m a^{1} / m]
         param.ELA : equilbrium line altitude [m]
 
     Returns
     -------
-    a : firedrake function for the mass balance rate
-
+    a, a_mod : firedrake functions for the mass balance rate and adjusted mass 
+        balance rate
     '''
     
     b_max = param.b_max
@@ -174,29 +222,53 @@ def massBalance(s, Q, param):
     ELA = param.ELA
     
     k = 0.005 # smoothing factor
-    # b_sea = -b_gradient*ELA
-    
+        
     z_threshold = b_max/b_gradient + ELA # location where unsmoothed balance rate switches from nonzero to zero
+
+    # unmodified mass balance rate    
+    a = firedrake.interpolate(b_gradient*((s-ELA) - 1/(2*k) * ln(1+exp(2*k*(s - z_threshold)))), s.function_space())
     
-    a = firedrake.interpolate(b_gradient*((s-ELA) - 1/(2*k) * ln(1+exp(2*k*(s - z_threshold)))), Q)
+    # width gradient
+    dwdx = icepack.interpolate(w.dx(0), w.function_space())
     
-    return a
+    # modified mass balance rate
+    a_mod = icepack.interpolate(a-u*h/w*dwdx, h.function_space())
+    
+    return a, a_mod
+
+
 
 #%% functions for re-meshing the model
-def find_endpoint_massflux(L, x, a, u, h, dt):
+def find_endpoint_massflux(L, x, a, u, h, w, dt):
+    '''
+    Finds the new glacier length using the mass-flux calving parameterization
+    of Amundson (2016) and Amundson and Carroll (2018).
+
+    Parameters
+    ----------
+    L : current glacier length [m]
+    x, a, u, h, w : firedrake functions for the longitudinal position, mass 
+        balance rate, velocity, thickness, and width
+    dt : time step size [a]
+
+    Returns
+    -------
+    L_new : new glacier length [m]
+    '''
     
-    alpha = 1.15
+    alpha = 1.15 # frontal ablation parameter
     
     index = np.argsort(x.dat.data)
     xGlacier = x.dat.data[index]
     balanceRate = a.dat.data[index]
+    width = w.dat.data[index]
     
     hGlacier = h.dat.data[index]
     uGlacier = icepack.depth_average(u).dat.data[index]
-    Ut = uGlacier[-1]
+    Ut = uGlacier[-1] # terminus velocity [m a^{-1}]
     
-    Qb = cumtrapz(balanceRate, dx=xGlacier[1], initial=0)
-    Ub = Qb[-1]/hGlacier[-1]
+    Qb = np.trapz(balanceRate*width, dx=xGlacier[1]) # terminus balance flux [m^3 a^{-1}]
+    Ub = Qb/(hGlacier[-1]*width[-1]) # terminus balance velocity [m a^{-1}]
     
     dLdt = (alpha-1)*(Ub-Ut)
     
@@ -205,7 +277,7 @@ def find_endpoint_massflux(L, x, a, u, h, dt):
     return L_new
 
 
-def find_endpoint_haf(L, h, s, Q):
+def find_endpoint_haf(L, h, s):
     '''
     Finds new glacier length using the height above flotation calving criteria.
     For some reason this only works if desired height above flotation is more 
@@ -214,9 +286,7 @@ def find_endpoint_haf(L, h, s, Q):
     Parameters
     ----------
     L : domain length [m]
-    h : firedrake function for the thickness profile
-    s : firedrake function for the surface elevation profile
-    Q : firedrake scalar function space
+    h, s : firedrake functions for the thickness and surface elevation
 
     Returns
     -------
@@ -224,10 +294,10 @@ def find_endpoint_haf(L, h, s, Q):
 
     '''
     
-    zb = firedrake.interpolate(s-h, Q) # glacier bed elevation [m]
+    zb = firedrake.interpolate(s-h, s.function_space()) # glacier bed elevation [m]
     
-    h_flotation = firedrake.interpolate(-rho_water/rho_ice*zb, Q) # thickness flotation (thickness if at flotation) [m]
-    haf = firedrake.interpolate(h - h_flotation, Q) # height above flotation [m]
+    h_flotation = firedrake.interpolate(-rho_water/rho_ice*zb, s.function_space()) # thickness flotation (thickness if at flotation) [m]
+    haf = firedrake.interpolate(h - h_flotation, s.function_space()) # height above flotation [m]
 
     haf_dat = haf.dat.data # height above flotation as a numpy array
     x_dat = np.linspace(0, L, len(h.dat.data), endpoint=True) # grid points as a numpy array [m]
@@ -239,7 +309,7 @@ def find_endpoint_haf(L, h, s, Q):
     return L_new
 
 
-def regrid(n, L, L_new, h, u, sed):
+def regrid(n, x, L, L_new, h, u, sed):
     '''
     Create new mesh and interpolate functions onto the new mesh
     
@@ -248,21 +318,17 @@ def regrid(n, L, L_new, h, u, sed):
     n : number of grid points
     L : length of source function [m]
     L_new : length of destination function [m]
-    h : thickness profile [m]
-    u : velocity profile [m a^{-1}]
+    h, u : firedrake thickness and velocity functions [m; m a^{-1}]
     sed : instance of the sediment model class
         
     Returns
     -------
-    Q : destination scalar function space
-    V : destination vector function space
-    h : destination thickness profile [m]
-    u : destination velocity profile [m a^{-1}]
-    b : destination bed profile [m]
-    s : destination surface profile [m]
+    Q, V : destination scalar and vector function spaces
+    x, h, u, b, s, w : destination position, thickness, velocity, bed, surface, and width functions
     mesh : destination mesh
-    x : destination x function
     '''
+    
+    x_old = x # need to keep previous position function
     
     # Initialize mesh and mesh spaces
     mesh1d = firedrake.IntervalMesh(n, L_new)
@@ -275,31 +341,33 @@ def regrid(n, L, L_new, h, u, sed):
     x = firedrake.interpolate(x_sc, Q)
     # z = firedrake.interpolate(z_sc, Q)
     
-    # b, _ = bedrock(x, Q)
-
     
     zBed_interpolator = interp1d(sed.x, sed.H+sed.zBedrock) # create interpolator to put bed elevation into a firedrake function
     zBed_xarray = xarray.DataArray(zBed_interpolator(x.dat.data), [x.dat.data], 'x')
     b = icepack.interpolate(zBed_xarray, Q)
 
-    # Remesh thickness and velocity
-    h =  adjust_function(h, L, L_new, Q)
-    u =  adjust_function(u, L, L_new, V)
+    # remesh thickness and velocity
+    h =  adjust_function(h, x_old, L, L_new, Q)
+    u =  adjust_function(u, x_old, L, L_new, V)
 
-        
+    # compute new surface based on thickness and bed; this determines whether
+    # or not the ice is floating    
     s = icepack.compute_surface(thickness = h, bed = b) 
     
-    return Q, V, h, u, b, s, mesh, x
+    w = width(x, Q)
+    
+    return Q, V, h, u, b, s, w, mesh, x
 
 
 
-def adjust_function(func_src, L, L_new, funcspace_dest):
+def adjust_function(func_src, x, L, L_new, funcspace_dest):
     '''
     Shrinks function spaces.
 
     Parameters
     ----------
     func_src : source function
+    x : old position function [m]
     L : length of source function [m]
     L_new : length of destination function [m]
     funcspace_dest : destination function
@@ -310,8 +378,13 @@ def adjust_function(func_src, L, L_new, funcspace_dest):
 
     '''
     
+    
+    x = x.dat.data
+    index = np.argsort(x)
+    x = x[index]
+        
     # extract data from func_src
-    data = func_src.dat.data
+    data = func_src.dat.data[index]
     
     # need to do this differently if the function space is a scalar or vector
     if funcspace_dest.topological.name=='velocity':
@@ -319,10 +392,8 @@ def adjust_function(func_src, L, L_new, funcspace_dest):
     else:
         data_len = len(data)
     
-    # index = np.argsort(x.dat.data)
-    # x = x.dat.data[index]
-    x = np.linspace(0, L, data_len, endpoint=True) # old grid points
     x_new = np.linspace(0, L_new, data_len, endpoint=True) # new grid points
+
     
     # Interpolate data from x to x_new
     if funcspace_dest.topological.name=='velocity':
@@ -335,8 +406,7 @@ def adjust_function(func_src, L, L_new, funcspace_dest):
         # velocity is a good starting point for the next iteration.
         
         u_ = icepack.depth_average(func_src).dat.data
-        # u_ = u_[index]
-        u_[0], u_[1] = u_[1], u_[0] # swap first two values; seems to be an issue here with the depth averaging?
+        u_ = u_[index]
         
         data_interpolator = interp1d(x, u_, kind='linear', fill_value='extrapolate')
         data_new = data_interpolator(x_new)
@@ -362,7 +432,7 @@ def schoof_approx_friction(**kwargs):
     s = kwargs['surface']
     C = kwargs['friction']
 
-    U_0 = firedrake.Constant(50)
+    U_0 = firedrake.Constant(100)
     
     U = sqrt(inner(u,u))
     tau_0 = firedrake.interpolate(
@@ -380,6 +450,28 @@ def schoof_approx_friction(**kwargs):
     )
 
 
+def side_drag(w):
+    '''
+    Calculate the drag coefficient for side drag, for the equation:
+    1/W*(4/(A*W))^{1/3} * |u|^{-2/3}*u
+    
+    Currently assumes that the width is constant. Later may adjust this to pass 
+    in a width function.
+    
+    Parameters
+    ----------
+    h : firedrake thickness function; only used to determine the function space
+    
+    Returns
+    -------
+    Cs : lateral drag coefficient
+    
+    '''
+    
+    Cs = firedrake.interpolate( 1/w * (4/(constant.A*w))**(1/3), w.function_space())
+
+    return Cs
+
 #%% sediment transport model
 # be careful with CFL condition?
 # bed function not updating correctly?
@@ -388,7 +480,7 @@ class sedModel:
 
     def __init__(self, L, sedDepth):
         '''
-        Create grid and initial values of sediment model
+        Create grid and initial values of the sediment model.
     
         Parameters
         ----------
@@ -396,9 +488,11 @@ class sedModel:
         sedDepth = depth to sediment from sea level [m]
     
         '''
+        
         self.x = np.linspace(0, L, 101, endpoint=True)
-        self.zBedrock = 1500*np.exp(-(self.x+5000)**2 / (2*15000**2)) - 400 # make the same as bedrock
-    
+        
+        self.zBedrock = bedrock_geometry(self.x)
+        
         # determine x-location of start of sediment
         bedInterpolator = interp1d(self.zBedrock, self.x)
         sedLevelInit = bedInterpolator(-sedDepth) # sediment fills fjord to 50 m depth

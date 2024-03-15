@@ -25,7 +25,7 @@ from firedrake import conditional, eq, ne, le, ge, lt, gt
 import tqdm
 
 import func
-from func import schoof_approx_friction, constants, params
+from func import schoof_approx_friction, side_drag, constants, params
 constant = constants()
 param = params()
 
@@ -34,7 +34,7 @@ import glob
 #%% 
 
 
-sed = func.sedModel(param.L,param.sedDepth)
+
 
 files = sorted(glob.glob('./results/spinup/*'))
 
@@ -43,6 +43,7 @@ with firedrake.CheckpointFile(files[-1], "r") as checkpoint:
     h = checkpoint.load_function(mesh, name="thickness")
     s = checkpoint.load_function(mesh, name="surface")
     u = checkpoint.load_function(mesh, name="velocity")
+    # w = checkpoint.load_function(mesh, name="width")
 
 # Set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh.
 Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
@@ -52,10 +53,18 @@ x_sc, z_sc = firedrake.SpatialCoordinate(mesh)
 x = firedrake.interpolate(x_sc, Q)
 z = firedrake.interpolate(z_sc, Q)
 
+w = func.width(x, Q)
+
 L = np.max(x.dat.data)
 
 # create initial geometry
 b, tideLine = func.bedrock(x, Q) # firedrake bed function
+
+sed = func.sedModel(param.L, -b.dat.data[-1])
+
+
+
+
 
 fig, axes = plt.subplots(2, 2)
 axes[0,0].set_xlabel('Longitudinal Coordinate [m]')
@@ -93,10 +102,12 @@ num_timesteps = years * timesteps_per_year
 
 color_id = np.linspace(0,1,num_timesteps)
 
-param.ELA = 500 # lower the ELA
+param.ELA = 700 # lower the ELA
 
 length = np.zeros(num_timesteps+1)
 length[0] = L
+
+
 
 for step in tqdm.trange(num_timesteps):
     u = solver.diagnostic_solve(
@@ -105,9 +116,10 @@ for step in tqdm.trange(num_timesteps):
         surface = s,
         fluidity = constant.A,
         friction = constant.C,
+        side_friction = side_drag(h)
     )
     
-    a = func.massBalance(s, Q, param)
+    a = func.massBalance(x, s, h, u, w, param)
     
     h = solver.prognostic_solve(
         dt,
@@ -116,7 +128,7 @@ for step in tqdm.trange(num_timesteps):
         accumulation = a)
     
     # erode the bed; what is the right order of doing these updates?
-    b = sed.sedTransportImplicit(x, h, a, Q, dt)
+    # b = sed.sedTransportImplicit(x, h, a, Q, dt)
     
     s = icepack.compute_surface(thickness = h, bed = b)
     
@@ -125,10 +137,10 @@ for step in tqdm.trange(num_timesteps):
     # L_new = np.max([func.find_endpoint_haf(L, h, s, Q), tideLine]) # find new terminus position
     
     if L_new > tideLine: # if tidewater glacier, always need to regrid
-        Q, V, h, u, b, s, mesh, x = func.regrid(param.n, L, L_new, h, u, sed) # regrid velocity and thickness
+        Q, V, h, u, b, s, w, mesh, x = func.regrid(param.n, L, L_new, h, u, sed)    
                 
     elif (L_new==tideLine) and (L_new<L): # just became land-terminating, need to regrid
-        Q, V, h, u, b, s, mesh, x = func.regrid(param.n, L, L_new, h, u, sed) # regrid velocity and thickness
+        Q, V, h, u, b, s, w, mesh, x = func.regrid(param.n, L, L_new, h, u, sed) # regrid velocity and thickness
         h.interpolate(max_value(h, constant.hmin))
         
     else: # land-terminating and was previously land-terminating, only need to ensure minimum thickness
@@ -174,6 +186,7 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(h, name="thickness")
         checkpoint.save_function(s, name="surface")
         checkpoint.save_function(u, name="velocity")
+        checkpoint.save_function(w, name="width")
     
 
 # plt.figure()
