@@ -66,7 +66,7 @@ class paramsSed:
     def __init__(self):
         self.h_eff = 0.1 # effective water thickness [m]
         self.c = 2e-12
-        self.w = 500 # settling velocity [m a^{-1}]
+        self.w = 400 # settling velocity [m a^{-1}]
         self.k = 5000 # sediment diffusivity
 
 paramSed = paramsSed()
@@ -489,7 +489,7 @@ class sedModel:
     
         '''
         
-        self.x = np.linspace(0, L, 101, endpoint=True)
+        self.x = np.linspace(0, L, 501, endpoint=True)
         
         self.zBedrock = bedrock_geometry(self.x)
         

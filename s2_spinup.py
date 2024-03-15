@@ -18,7 +18,7 @@ import func
 from func import schoof_approx_friction, side_drag, constants, params
 constant = constants()
 param = params()
-    
+
 #%% 
 # initialize mesh
 L = param.L
@@ -61,7 +61,6 @@ years = 50
 dt = param.dt
 num_timesteps = int(years/dt)
 
-
 # set up basic figure
 fig, axes = plt.subplots(2, 1)
 axes[0].set_xlabel('Longitudinal Coordinate [m]')
@@ -74,6 +73,12 @@ firedrake.plot(icepack.depth_average(b), edgecolor='k', axes=axes[1]);
 plt.tight_layout();
 
 color_id = np.linspace(0,1,num_timesteps)
+
+# create length and time arrays for storing changes in glacier length
+length = np.zeros(num_timesteps+1)
+length[0] = L
+
+time = np.linspace(0, num_timesteps*dt, num_timesteps, endpoint=True)
 
 
 for step in tqdm.trange(num_timesteps):
@@ -119,6 +124,7 @@ for step in tqdm.trange(num_timesteps):
         s = icepack.compute_surface(thickness = h, bed = b)
         
     L = L_new # reset the length
+    length[step+1] = L
 
     zb = firedrake.interpolate(s - h, Q) # glacier bottom; not the same as the bedrock function if floating
 
@@ -131,7 +137,7 @@ for step in tqdm.trange(num_timesteps):
     }
      
     solver = icepack.solvers.FlowSolver(model, **opts)
-    
+
     if step%10==0:
         firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0]);
         firedrake.plot(icepack.depth_average(s), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1]);
@@ -142,14 +148,9 @@ for step in tqdm.trange(num_timesteps):
     filename = './results/spinup/spinup_' + "{:03}".format(step) + '.h5'
     with firedrake.CheckpointFile(filename, "w") as checkpoint:
         checkpoint.save_mesh(mesh)
-        checkpoint.save_function(x, name='position')
+        checkpoint.save_function(x, name="position")
         checkpoint.save_function(h, name="thickness")
         checkpoint.save_function(s, name="surface")
         checkpoint.save_function(u, name="velocity")
-        checkpoint.save_function(b, name='bed')
-        checkpoint.save_function(w, name='width')
-
-
-
-
-
+        checkpoint.save_function(b, name="bed")
+        checkpoint.save_function(w, name="width")
