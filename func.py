@@ -378,13 +378,12 @@ def adjust_function(func_src, x, L, L_new, funcspace_dest):
 
     '''
     
-    
     x = x.dat.data
     index = np.argsort(x)
     x = x[index]
         
     # extract data from func_src
-    data = func_src.dat.data[index]
+    data = func_src.dat.data
     
     # need to do this differently if the function space is a scalar or vector
     if funcspace_dest.topological.name=='velocity':
@@ -392,6 +391,7 @@ def adjust_function(func_src, x, L, L_new, funcspace_dest):
     else:
         data_len = len(data)
     
+    x = np.linspace(0, L, data_len, endpoint=True)
     x_new = np.linspace(0, L_new, data_len, endpoint=True) # new grid points
 
     
@@ -412,7 +412,7 @@ def adjust_function(func_src, x, L, L_new, funcspace_dest):
         data_new = data_interpolator(x_new)
         
     else:
-        data_interpolator = interp1d(x, data, kind='linear', fill_value='extrapolate')
+        data_interpolator = interp1d(x, data[index], kind='linear', fill_value='extrapolate')
         data_new = data_interpolator(x_new)
     
     

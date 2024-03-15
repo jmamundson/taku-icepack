@@ -57,7 +57,7 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 100
+years = 50
 dt = param.dt
 num_timesteps = int(years/dt)
 
@@ -120,7 +120,6 @@ for step in tqdm.trange(num_timesteps):
         
     L = L_new # reset the length
 
-    
     zb = firedrake.interpolate(s - h, Q) # glacier bottom; not the same as the bedrock function if floating
 
     # update model with new friction coefficients
