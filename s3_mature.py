@@ -1,5 +1,7 @@
 # Known issues
 # - height above flotation interpolator not working if haf_desired = 0
+# - hillslope processes if no erosion/deposition; there is a kind in the bed at the bedrock/sediment transition
+#   need to fix somehow. also affects the surface geometry and velocity.
 
 import firedrake
 
@@ -47,11 +49,11 @@ z = firedrake.interpolate(z_sc, Q)
 L = np.max(x.dat.data)
 
 # find tideLine; currently this will only work if the glacier is terminating in the ocean
-_, tideLine = func.bedrock(x, Q) # 
+_, tideLine = func.bedrock(x, Q=Q) # 
 
 # initialize sediment model to fill fjord at level equal to the base of the terminus
 # (also requires that terminus be in the water) 
-sed = func.sedModel(param.L, -b.dat.data[-1]-10)
+sed = func.sedModel(param.L, -b.dat.data[-1])
 
 
 # set up hybrid model solver with custom friction function
@@ -65,7 +67,7 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 100
+years = 1
 dt = param.dt
 num_timesteps = int(years/dt)
 

@@ -65,37 +65,15 @@ class paramsSed:
     
     def __init__(self):
         self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 2e-12
-        self.w = 400 # settling velocity [m a^{-1}]
-        self.k = 5000 # sediment diffusivity
+        self.c = 2e-12 # Brinkerhoff used 2e-12
+        self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
+        self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
 
 paramSed = paramsSed()
 
 
 #%% functions to specify bedrock elevation, initial thickness, and initial velocity
-
-def bedrock_geometry(x):
-    '''
-    Describes the bedrock geometry.
-
-    Parameters
-    ----------
-    x : longitudinal position; can be a firedrake function or an array [m]
-
-    Returns
-    -------
-    zb : bed elevation [m]
-    '''
-    
-    if isinstance(x, np.ndarray)==False:
-        zb = 2500*exp(-(x+5000)**2 / (2*15000**2)) - 400
-    else:
-        zb = 2500*np.exp(-(x+5000)**2 / (2*15000**2)) - 400
-    
-    return(zb)
-    
-
-def bedrock(x, Q):
+def bedrock(x, **kwargs):
     '''
     Returns a longitudinal bedrock profile.
 
@@ -110,18 +88,24 @@ def bedrock(x, Q):
     tideLine : location where the bedrock intersects sea level
     '''
     
-    zb = bedrock_geometry(x)
+    if "Q" in kwargs:
+        Q = kwargs["Q"]
+        b = 2500*exp(-(x+5000)**2 / (2*15000**2)) - 400
+        b = firedrake.interpolate(b, Q)
     
-    b = firedrake.interpolate(zb, Q)
+        # determine where the bedrock intersects sea level
+        bedInterpolator = interp1d(b.dat.data, x.dat.data)
     
-    # determine where the bedrock intersects sea level
-    bedInterpolator = interp1d(b.dat.data, x.dat.data)
+    else:
+        b = 2500*np.exp(-(x+5000)**2 / (2*15000**2)) - 400
+        bedInterpolator = interp1d(b, x)
+    
     tideLine = bedInterpolator(0) 
     
     return(b, tideLine)    
     
 
-def width(x, Q):
+def width(x, **kwargs):
     '''
     Returns the valley width as a function of longitudinal position. 
 
@@ -135,16 +119,23 @@ def width(x, Q):
     W : firedrake function that contains the valley width
     '''
     
+    
     k = 5 # smoothing parameter
     x_step = 10e3 # location of step [m]
     w_fjord = 2e3 # fjord width [m]
     w_max = w_fjord + 3e3 # maximum valley width [m]
     
-    # using a logistic function, which makes the fjord walls roughly parallel
-    w_array = w_max * (1 - 1 / (1+exp(-k*(x-x_step)/x_step))) + w_fjord
+    if "Q" in kwargs: # create firedrake function
+        Q = kwargs["Q"]
+        # using a logistic function, which makes the fjord walls roughly parallel
+        w_array = w_max * (1 - 1 / (1+exp(-k*(x-x_step)/x_step))) + w_fjord
+        
+        w = firedrake.interpolate(w_array, Q)
     
-    w = firedrake.interpolate(w_array, Q)
-    
+    else:
+        w = w_max * (1 - 1 / (1+np.exp(-k*(x-x_step)/x_step))) + w_fjord
+        
+        
     return(w)
 
 
@@ -354,7 +345,7 @@ def regrid(n, x, L, L_new, h, u, sed):
     # or not the ice is floating    
     s = icepack.compute_surface(thickness = h, bed = b) 
     
-    w = width(x, Q)
+    w = width(x, Q=Q)
     
     return Q, V, h, u, b, s, w, mesh, x
 
@@ -491,7 +482,7 @@ class sedModel:
         
         self.x = np.linspace(0, L, 501, endpoint=True)
         
-        self.zBedrock = bedrock_geometry(self.x)
+        self.zBedrock, _ = bedrock(self.x)
         
         # determine x-location of start of sediment
         bedInterpolator = interp1d(self.zBedrock, self.x)
@@ -509,100 +500,6 @@ class sedModel:
         self.erosionRate = np.zeros(len(self.x))
         self.depositionRate = np.zeros(len(self.x))
 
-
-    def sedTransportExplicit(self, x, h, a, Q, dt):
-        '''
-        Calculate new bed elevation. 
-    
-        Parameters
-        ----------
-        x : function containing longitudinal position of glacier grid coordinates
-        h : firedrake function for the glacier thickness
-        a : firedrake function for the mass balance rate
-        xBed : longitudinal coordinates of bed model [m]
-        zBedrock : bedrock elevation of bed model [m]
-        Hsediment : sediment thickness [m]
-        dt : time step size [a]
-    
-        Returns
-        -------
-        b : firedrak function for the bed elevation
-        Hsediment : new sediment thickness in the bed model
-        '''
-    
-        # create numpy array of glacier x-coordinates; make sure they are properly 
-        # sorted
-        index = np.argsort(x.dat.data)
-        xGlacier = x.dat.data[index]
-    
-        # mask out areas where the ice is less than 10 m thick, then extract melt rate
-        # at glacier x-coordinates
-        iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
-        # meltRate = icepack.interpolate(conditional(a>0, 0, -a), Q)
-        meltRate = icepack.interpolate(param.b_max-a, Q)
-        meltRate = meltRate.dat.data[index]
-    
-        meltInterpolator = interp1d(xGlacier, meltRate, fill_value=np.array([0]), bounds_error=False)
-        meltBed = meltInterpolator(self.x)
-    
-        # determine subglacial charge on the sediment model grid points
-        dx = self.x[1] 
-        self.Qw = cumtrapz(meltBed, dx=dx, initial=0) # subglacial discharge, calculated from balance rate
-
-        
-        delta_s = [np.min((x, 1)) for x in self.H] # erosion goes to 0 if sediment thickness is 0
-        self.erosionRate = paramSed.c * self.Qw**2/paramSed.h_eff**3 * delta_s
-        self.erosionRate[self.x > xGlacier[-1]] = 0 # no erosion in front of the glacier; only works for tidewater, but okay because no erosion when land-terminating
-   
-
-        # solve for sediment transport with left-sided difference
-        d = self.Qw + dx*paramSed.w
-        d[0] = 1
-        d[-1] = 1
-        
-        d_left = -self.Qw[1:]
-        d_left[-1] = 0
-        
-        diagonals = [d_left, d]
-        D = sparse.diags(diagonals, [-1,0]).toarray()
-        
-        f = dx*self.Qw*self.erosionRate
-        f[0] = 0
-        f[1] = 0
-        
-        Qs = np.linalg.solve(D,f)
-        self.Qs = Qs
-    
-        self.depositionRate = np.zeros(len(Qs))
-        self.depositionRate[self.Qw>0] = paramSed.w*Qs[self.Qw>0]/self.Qw[self.Qw>0]
-    
-        zBed = self.H+self.zBedrock # elevation of glacier bed from previous time step
-    
-        # calculate bed curvature for hillslope diffusion; dz^2/dx^2(zBed)
-        zBed_curvature = (zBed[2:]-2*zBed[1:-1]+zBed[:-2])/dx**2
-        zBed_left = (zBed[2]-2*zBed[1]+zBed[0])/dx**2
-        zBed_right = (zBed[-1]-2*zBed[-2]+zBed[-3])/dx**2
-    
-        zBed_curvature = np.concatenate(([zBed_left], zBed_curvature, [zBed_right]))
-    
-        # self.hillslope = paramSed.k*(1-np.exp(-self.H/10))*zBed_curvature*np.sign(self.H)
-        self.hillslope = 0*paramSed.k*zBed_curvature*delta_s
-        
-        
-        self.dHdt = self.depositionRate - self.erosionRate + self.hillslope
-        self.H = self.H + self.dHdt*dt # + paramSed.k*zBed_curvature)*dt # new sediment thickness
-    
-        self.H = self.H + self.hillslope
-        self.H[self.H<0] = 0 # can't erode bedrock
-    
-        zBed = self.H+self.zBedrock # new bed elevation at sediment model grid points
-    
-        zBed_interpolator = interp1d(self.x, zBed) # create interpolator to put bed elevation into a firedrake function
-    
-        zBed_xarray = xarray.DataArray(zBed_interpolator(xGlacier), [xGlacier], 'x')
-        b = icepack.interpolate(zBed_xarray, Q)
-        
-        return b
     
 
     def sedTransportImplicit(self, x, h, a, Q, dt):
@@ -647,22 +544,25 @@ class sedModel:
         # sorted
         index = np.argsort(x.dat.data)
         xGlacier = x.dat.data[index]
+        
     
         # mask out areas where the ice is less than 10 m thick, then extract melt rate
         # at glacier x-coordinates
         iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
         # meltRate = icepack.interpolate(conditional(a>0, 0, -a), Q)
-        meltRate = icepack.interpolate(param.b_max-a, Q)
-        meltRate = icepack.interpolate(iceMask*meltRate, Q)
-        meltRate = meltRate.dat.data[index]
+        runoff = icepack.interpolate(param.b_max-a, Q)
+        runoff = icepack.interpolate(runoff*iceMask, Q)
+        runoff = runoff.dat.data[index]
     
-        meltInterpolator = interp1d(xGlacier, meltRate, fill_value=np.array([0]), bounds_error=False)
-        meltBed = meltInterpolator(self.x)
+        runoffInterpolator = interp1d(xGlacier, runoff, fill_value=np.array([0]), bounds_error=False)
+        runoff = runoffInterpolator(self.x)
     
-        # determine subglacial charge on the sediment model grid points
-        dx = self.x[1] 
-        self.Qw = cumtrapz(meltBed, dx=dx, initial=0) # subglacial discharge, calculated from balance rate
+        w = width(self.x)
         
+        # determine subglacial charge per unit width on the sediment model grid points
+        dx = self.x[1] 
+        self.Qw = cumtrapz(runoff*w, dx=dx, initial=0)/w # subglacial discharge, calculated from balance rate
+        self.Qw2 = cumtrapz(runoff, dx=dx, initial=0)
         delta_s = [np.min((x, 1)) for x in self.H] # erosion goes to 0 if sediment thickness is 0
         self.erosionRate = paramSed.c * self.Qw**2/paramSed.h_eff**3 * delta_s
         self.erosionRate[self.x > xGlacier[-1]] = 0 # no erosion in front of the glacier; only works for tidewater, but okay because no erosion when land-terminating
