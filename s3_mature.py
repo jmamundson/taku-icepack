@@ -22,9 +22,11 @@ constant = constants()
 param = params()
 
 import glob
+import pickle
 
 #%% 
-files = sorted(glob.glob('./results/spinup/*'))
+files = sorted(glob.glob('./results/spinup/*h5'))
+
 
 with firedrake.CheckpointFile(files[-1], "r") as checkpoint:
     mesh = checkpoint.load_mesh(name="mesh")
@@ -53,8 +55,8 @@ _, tideLine = func.bedrock(x, Q=Q) #
 
 # initialize sediment model to fill fjord at level equal to the base of the terminus
 # (also requires that terminus be in the water) 
-sed = func.sedModel(param.L, -b.dat.data[-1])
-
+sed = func.sedModel(param.L, -b.dat.data[-1]-10)
+sed.H[sed.H<2] = 2
 
 # set up hybrid model solver with custom friction function
 model = icepack.models.HybridModel(friction = schoof_approx_friction)
@@ -67,8 +69,8 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 1
-dt = param.dt
+years = 20
+dt = 0.1 #param.dt
 num_timesteps = int(years/dt)
 
 # set up basic figure
@@ -107,7 +109,7 @@ for step in tqdm.trange(num_timesteps):
         side_friction = side_drag(w)
     )
     
-    u_bar = icepack.interpolate(4/5*u, V) # width-averaged velocity
+    u_bar = icepack.interpolate(4/5*u, u.function_space()) # width-averaged velocity
     
     # determine mass balance rate and adjusted mass balance profile
     a, a_mod = func.massBalance(x, s, u_bar, h, w, param)
@@ -120,7 +122,7 @@ for step in tqdm.trange(num_timesteps):
         accumulation = a_mod)
     
     # erode the bed
-    b = sed.sedTransportImplicit(x, h, a, Q, dt)
+    b = sed.sedTransportImplicit(x, h, a, b, u, Q, dt)
 
     # determine surface elevation
     s = icepack.compute_surface(thickness = h, bed = b)
@@ -156,7 +158,7 @@ for step in tqdm.trange(num_timesteps):
      
     solver = icepack.solvers.FlowSolver(model, **opts)
 
-    if step%10==0:
+    if step%1==0:
         firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0,0]);
         firedrake.plot(icepack.depth_average(s), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
         firedrake.plot(icepack.depth_average(b), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
@@ -167,9 +169,9 @@ for step in tqdm.trange(num_timesteps):
         # axes[1,1].plot(sed.x, sed.depositionRate, color=plt.cm.viridis(color_id[step]), linestyle='--', label='Deposition rate')
         # axes[1,1].plot(sed.x, sed.hillslope, color=plt.cm.viridis(color_id[step]), linestyle=':', label='Deposition rate')
     
-   
-    filename = './results/mature/mature_' + "{:03}".format(step) + '.h5'
-    with firedrake.CheckpointFile(filename, "w") as checkpoint:
+    basename = './results/mature/mature_' + "{:04}".format(step)
+    # filename = './results/mature/mature_' + "{:03}".format(step) + '.h5'
+    with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
         checkpoint.save_mesh(mesh)
         checkpoint.save_function(x, name="position")
         checkpoint.save_function(h, name="thickness")
@@ -177,3 +179,7 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(u, name="velocity")
         checkpoint.save_function(b, name="bed")
         checkpoint.save_function(w, name="width")
+        
+    with open(basename + '_sed.pickle', 'wb') as file:
+        pickle.dump(sed, file)
+        file.close()    

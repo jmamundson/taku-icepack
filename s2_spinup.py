@@ -35,11 +35,11 @@ x = firedrake.interpolate(x_sc, Q)
 z = firedrake.interpolate(z_sc, Q)
 
 # create initial geometry
-b, tideLine = func.bedrock(x, Q) 
+b, tideLine = func.bedrock(x, Q=Q) 
 h = func.initial_thickness(x, Q)                  
 s = icepack.compute_surface(thickness = h, bed = b) 
 u = func.initial_velocity(x, V)
-w = func.width(x, Q)
+w = func.width(x, Q=Q)
 
 # initialize sediment model with sediment thickness of 0
 sed = func.sedModel(param.L, param.sedDepth)
