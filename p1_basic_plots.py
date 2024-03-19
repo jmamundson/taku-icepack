@@ -30,10 +30,15 @@ filesSed = sorted(glob.glob('./results/mature/*.pickle'))
 
 plt.ioff()
 
-lastfile = 200
-for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
-# for j in np.arange(0:len(files)): #np.linspace(0, 99, 100, endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
+b_t = np.zeros(len(files))
+x_t = np.zeros(len(files))
+h_0 = np.zeros(len(files))
 
+# lastfile = 199
+#for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
+# for j in np.arange(0:len(files)): #np.linspace(0, 99, 100, endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
+for j in np.arange(0,len(files)):
+    
     with firedrake.CheckpointFile(files[j], "r") as checkpoint:
         mesh = checkpoint.load_mesh(name="mesh")
         x = checkpoint.load_function(mesh, name="position")
@@ -60,7 +65,7 @@ for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int)
             file.close()    
     
 
-    fig, axes = plt.subplots(3, 2)
+    fig, axes = plt.subplots(4, 2)
     fig.set_figwidth(10)
     fig.set_figheight(8)
     
@@ -96,6 +101,11 @@ for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int)
     axes[2,1].set_xlim(xlim)
     axes[2,1].set_ylim([-5, 5])
     
+    axes[3,1].set_xlabel('Longitudinal coordinate [km]')
+    axes[3,1].set_ylabel('Sediment thickness [m]')
+    axes[3,1].set_xlim(xlim)
+    axes[3,1].set_ylim([0,300])
+    
     plt.tight_layout()
     
     
@@ -122,6 +132,7 @@ for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int)
     
     axes[2,0].plot(x, u, 'k')
     
+    axes[3,0].axis('off')
     
     axes[0,1].plot(sed.x*1e-3, sed.Qw*1e-6, 'k', label='subglacial discharge')
     axes[0,1].plot(sed.x*1e-3, sed.Qs*1e-6, 'k:', label='sediment flux')
@@ -135,9 +146,13 @@ for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int)
     
     axes[2,1].plot(sed.x*1e-3, sed.hillslope, 'k', label='hillslope processes')
     axes[2,1].plot(sed.x*1e-3, sed.depositionRate-sed.erosionRate, 'k:', label='deposition-erosion')
-    
     axes[2,1].legend()
     
+    axes[3,1].plot(sed.x*1e-3, sed.H, 'k')
+    
+    b_t[j] = b[-1]
+    x_t[j] = x[-1]
+    h_0[j] = h[0]
     
     plt.savefig(files[j][:-2] + 'png', format='png', dpi=150)
     plt.close()
