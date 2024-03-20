@@ -56,7 +56,7 @@ _, tideLine = func.bedrock(x, Q=Q) #
 # initialize sediment model to fill fjord at level equal to the base of the terminus
 # (also requires that terminus be in the water) 
 sed = func.sedModel(param.L, -b.dat.data[-1]-10)
-sed.H[sed.H<2] = 2
+# sed.H[sed.H<2] = 2
 
 # set up hybrid model solver with custom friction function
 model = icepack.models.HybridModel(friction = schoof_approx_friction)
@@ -70,7 +70,7 @@ solver = icepack.solvers.FlowSolver(model, **opts)
 
 
 years = 200
-dt = 0.1 #param.dt
+dt = param.dt
 num_timesteps = int(years/dt)
 
 # set up basic figure
@@ -89,7 +89,7 @@ plt.tight_layout();
 
 color_id = np.linspace(0,1,num_timesteps)
 
-param.ELA = param.ELA - 100 # lower the ELA
+# param.ELA = param.ELA - 1 # lower the ELA
 
 # create length and time arrays for storing changes in glacier length
 length = np.zeros(num_timesteps+1)
@@ -106,6 +106,7 @@ for step in tqdm.trange(num_timesteps):
         surface = s,
         fluidity = constant.A,
         friction = constant.C,
+        U0 = constant.U0,
         side_friction = side_drag(w)
     )
     

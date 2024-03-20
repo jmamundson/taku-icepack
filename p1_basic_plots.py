@@ -37,7 +37,7 @@ h_0 = np.zeros(len(files))
 # lastfile = 199
 #for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
 # for j in np.arange(0:len(files)): #np.linspace(0, 99, 100, endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
-for j in np.arange(0,len(files)):
+for j in np.arange(0,100):#len(files)):
     
     with firedrake.CheckpointFile(files[j], "r") as checkpoint:
         mesh = checkpoint.load_mesh(name="mesh")
@@ -73,13 +73,13 @@ for j in np.arange(0,len(files)):
     
     axes[0,0].set_xlabel('Longitudinal Coordinate [km]')
     axes[0,0].set_ylabel('Elevation [m]')
-    axes[0,0].set_xlim(xlim)
-    axes[0,0].set_ylim(np.array([-500,2500]))
+    axes[0,0].set_xlim(np.array([20,40]))
+    axes[0,0].set_ylim(np.array([-500,1000]))
     
     axes[1,0].set_xlabel('Longitudinal Coordinate [km]')
     axes[1,0].set_ylabel('Transverse Coordinate [km]')
     axes[1,0].set_xlim(xlim)
-    axes[1,0].set_ylim(np.array([-4, 4]))
+    axes[1,0].set_ylim(np.array([-6, 6]))
     
     axes[2,0].set_xlabel('Longitudinal Coordinate [km]')
     axes[2,0].set_ylabel('Speed [m/yr]')

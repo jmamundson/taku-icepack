@@ -42,8 +42,9 @@ class constants:
     def __init__(self):
         self.Temperature = firedrake.Constant(273.15) # temperate ice = 0 deg C
         self.A = icepack.rate_factor(self.Temperature) # flow rate factor
-        self.C = firedrake.Constant(0.2) # friction coefficient [good value here?]
-        self.hmin = 10 # minimum thickness [m]
+        self.C = firedrake.Constant(0.2) # friction coefficient
+        self.U0 = firedrake.Constant(100) # threshold velocity for friction [m a^{-1}]
+        self.hmin = 10 # minimum glacier thickness [m]
 
 constant = constants()
 
@@ -70,9 +71,9 @@ class paramsSed:
     
     def __init__(self):
         self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 1.5e-12 # Brinkerhoff used 2e-12
+        self.c = 2e-12 # Brinkerhoff used 2e-12
         self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
-        self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
+        self.k = 10000 # sediment diffusivity; Brinkerhoff used 5000
 
 paramSed = paramsSed()
 
@@ -128,7 +129,7 @@ def width(x, **kwargs):
     k = 5 # smoothing parameter
     x_step = 10e3 # location of step [m]
     w_fjord = 2e3 # fjord width [m]
-    w_max = w_fjord + 3e3 # maximum valley width [m]
+    w_max = 10e3 - w_fjord # maximum valley width [m]
     
     if "Q" in kwargs: # create firedrake function
         Q = kwargs["Q"]
@@ -159,7 +160,7 @@ def initial_thickness(x, Q):
 
     '''
     
-    h_divide, h_terminus = 500, 300 # thickness at the divide and the terminus [m]
+    h_divide, h_terminus = 300, 300 # thickness at the divide and the terminus [m]
     h = h_divide - (h_divide-h_terminus) * x/x.dat.data[-1] # thickness profile [m]
     h0 = firedrake.interpolate(h, Q)
 
@@ -427,12 +428,11 @@ def schoof_approx_friction(**kwargs):
     h = kwargs['thickness']
     s = kwargs['surface']
     C = kwargs['friction']
-
-    U_0 = firedrake.Constant(100)
+    U0 = kwargs['U0']
     
     U = sqrt(inner(u,u))
     tau_0 = firedrake.interpolate(
-        C*( U_0**(1/weertman+1) + U**(1/weertman+1) )**(1/(weertman+1)), u.function_space()
+        C*( U0**(1/weertman+1) + U**(1/weertman+1) )**(1/(weertman+1)), u.function_space()
     )
     
     # Update pressures
@@ -442,7 +442,7 @@ def schoof_approx_friction(**kwargs):
 
     U = sqrt(inner(u, u))
     return tau_0 * phi * (
-        (U_0**(1/weertman+1) + U**(1/weertman+1))**(weertman/(weertman+1))-U_0
+        (U0**(1/weertman+1) + U**(1/weertman+1))**(weertman/(weertman+1))-U0
     )
 
 
@@ -511,7 +511,7 @@ class sedModel:
         
         dx = np.sort(x.dat.data)[1]
         xGlacier = np.arange(0, param.L, dx)
-        H_guess = np.ones(len(xGlacier))
+        H_guess = np.ones(len(xGlacier))*50
         
         result = root(self.__sedTransportImplicit2, H_guess, (x, h, a, b, u, Q, dt), method='hybr', options={'maxfev':int(1e6)})#, 'xtol':1e-12})
         
@@ -645,15 +645,10 @@ class sedModel:
         return(res)
 
     def __sedTransportImplicit2(self, H_guess, x, h, a, b, u, Q, dt):
-        # use Crank-Nicolson method; need to use minimization because right hand side depends on H (sediment thickness)
+        # use Backward Euler
         
         
         
-        # don't need minimization??? or not implemented correctly?
-        # RHS new should depend on H_new, but it doesn't, I don't think
-        
-        
-        # compute new values
         # create numpy array of glacier x-coordinates; make sure they are properly 
         # sorted
         index = np.argsort(x.dat.data)
@@ -680,7 +675,8 @@ class sedModel:
         self.x = np.arange(0, param.L, dx)
         self.H = sedH_interpolator(self.x) # sediment thickness on extended glacier grid
         H_old = self.H
-        self.zBedrock, _ = bedrock(self.x) # sediment thickness on extended glacier grid 
+        
+        self.zBedrock, _ = bedrock(self.x) # bedrock on extended glacier grid 
         w = width(self.x)
     
         # determine subglacial charge per unit width on the glacier model grid points
@@ -690,14 +686,14 @@ class sedModel:
         self.Qw = cumtrapz(runoff*w, dx=dx, initial=0)/w # subglacial discharge, calculated from balance rate
     
         # delta_s = [np.min((x, 1)) for x in self.H] # erosion goes to 0 if sediment thickness is 0
-        delta_s = (1-np.exp(-self.H)) # similar to what Brinkerhoff has in code?
+        delta_s = (1-np.exp(-H_guess)) # similar to what Brinkerhoff has in code?
         
         # effective thickness is water depth if not glacier at the grid point
         # allows for some small erosion in front of the glacier, especially if the water gets shallow
         h_eff = paramSed.h_eff*np.ones(len(self.x)) 
         
         index = self.x>np.max(xGlacier)
-        h_eff[index] = -(self.H[index]+self.zBedrock[index]) 
+        h_eff[index] = -(H_guess[index]+self.zBedrock[index]) 
         
         self.erosionRate = paramSed.c * self.Qw**2/h_eff**3 * delta_s
         # self.erosionRate[self.x > xGlacier[-1]] = 0 # no erosion in front of the glacier; only works for tidewater, but okay because no erosion when land-terminating
@@ -723,7 +719,7 @@ class sedModel:
     
     
         # test higher water flux in the fjord
-        self.Qw[self.x > xGlacier[-1]] = 5*self.Qw[self.x > xGlacier[-1]]
+        self.Qw[self.x > xGlacier[-1]] = 2*self.Qw[self.x > xGlacier[-1]]
         # self.Qw[self.x > xGlacier[-1]] += -bedGlacier[-1]*uGlacier[-1]*0.5 # add more buoyancy forcing?
         
         # end test
@@ -731,7 +727,7 @@ class sedModel:
         self.depositionRate = np.zeros(len(Qs))
         self.depositionRate[self.Qw>0] = paramSed.w*Qs[self.Qw>0]/self.Qw[self.Qw>0]
     
-        zBed = self.H+self.zBedrock # elevation of glacier bed from previous time step
+        zBed = H_guess+self.zBedrock # elevation of glacier bed from previous time step
     
         # calculate bed curvature for hillslope diffusion; dz^2/dx^2(zBed)
         zBed_curvature = (zBed[2:]-2*zBed[1:-1]+zBed[:-2])/dx**2
@@ -742,7 +738,7 @@ class sedModel:
     
         # self.hillslope = paramSed.k*(1-np.exp(-self.H/10))*zBed_curvature*np.sign(self.H)
         # redefine delta_a
-        delta_s = (1-np.exp(-self.H/10))
+        delta_s = (1-np.exp(-H_guess/10))
         self.hillslope = paramSed.k*zBed_curvature*delta_s
         
         self.dHdt = self.depositionRate - self.erosionRate + self.hillslope

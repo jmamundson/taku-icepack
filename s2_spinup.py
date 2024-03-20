@@ -80,6 +80,7 @@ length[0] = L
 
 time = np.linspace(0, num_timesteps*dt, num_timesteps, endpoint=True)
 
+volumeOld = 0
 
 for step in tqdm.trange(num_timesteps):
     # solve for velocity
@@ -89,6 +90,7 @@ for step in tqdm.trange(num_timesteps):
         surface = s,
         fluidity = constant.A,
         friction = constant.C,
+        U0 = constant.U0,
         side_friction = side_drag(w)
     )
     
@@ -137,6 +139,17 @@ for step in tqdm.trange(num_timesteps):
     }
      
     solver = icepack.solvers.FlowSolver(model, **opts)
+
+    # areaCrossSectional = icepack.interpolate(h*w, Q)
+    # x_tmp = x.dat.data
+    # index = np.argsort(x_tmp)
+    # x_tmp = x_tmp[index]
+    # areaCrossSectional = areaCrossSectional.dat.data[index]
+    
+    # volume = np.trapz(areaCrossSectional, dx=x_tmp[1])*1e-9
+    
+    # print((volume-volumeOld)/volumeOld)
+    # volumeOld = volume
 
     if step%10==0:
         firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0]);
