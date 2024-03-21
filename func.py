@@ -42,8 +42,8 @@ class constants:
     def __init__(self):
         self.Temperature = firedrake.Constant(273.15) # temperate ice = 0 deg C
         self.A = icepack.rate_factor(self.Temperature) # flow rate factor
-        self.C = firedrake.Constant(0.2) # friction coefficient
-        self.U0 = firedrake.Constant(100) # threshold velocity for friction [m a^{-1}]
+        self.C = firedrake.Constant(0.1) # friction coefficient
+        self.U0 = firedrake.Constant(500) # threshold velocity for friction [m a^{-1}]
         self.hmin = 10 # minimum glacier thickness [m]
 
 constant = constants()
@@ -57,6 +57,7 @@ class params:
         self.n = 100 # number of grid points
         self.dt = 0.1 # time step size [a]
         self.L = 40e3 # initial domain length [m]
+        self.Lsed = 60e3 # length of sediment model [m]
         self.sedDepth = 50 # depth to sediment, from sea level, prior to advance scenario [m]
         self.b_max = 4 # maximum mass balance rate [m a^{-1}]
         self.b_gradient = 0.01 # mass balance gradient
@@ -71,8 +72,8 @@ class paramsSed:
     
     def __init__(self):
         self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 2e-12 # Brinkerhoff used 2e-12
-        self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
+        self.c = 1.5e-12 # Brinkerhoff used 2e-12
+        self.w = 600 # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 10000 # sediment diffusivity; Brinkerhoff used 5000
 
 paramSed = paramsSed()
@@ -510,10 +511,10 @@ class sedModel:
     def sedTransportImplicit(self, x, h, a, b, u, Q, dt):
         
         dx = np.sort(x.dat.data)[1]
-        xGlacier = np.arange(0, param.L, dx)
-        H_guess = np.ones(len(xGlacier))*50
+        xSed = np.arange(0, param.Lsed, dx)
+        H_guess = np.ones(len(xSed))*50
         
-        result = root(self.__sedTransportImplicit2, H_guess, (x, h, a, b, u, Q, dt), method='hybr', options={'maxfev':int(1e6)})#, 'xtol':1e-12})
+        result = root(self.__sedTransportImplicit, H_guess, (x, h, a, b, u, Q, dt), method='hybr', options={'maxfev':int(1e6)})#, 'xtol':1e-12})
         
         # result = root(self.__sedTransportImplicit, self.H, (x, h, a, b, u, Q, dt), method='hybr', options={'maxfev':int(1e6)})#, 'xtol':1e-12})
         self.H = result.x
@@ -533,118 +534,9 @@ class sedModel:
         return b
     
 
+
+
     def __sedTransportImplicit(self, H_guess, x, h, a, b, u, Q, dt):
-        # use Crank-Nicolson method; need to use minimization because right hand side depends on H (sediment thickness)
-        
-        # extract and temporarily keep the old values
-        H_old = self.H
-        
-        
-        # clunky way of dealing with first time step, for now
-        if hasattr(self,'hillslope')==True:
-            edot_old = self.erosionRate
-            ddot_old = self.depositionRate
-            hill_old = self.hillslope
-        else:
-            edot_old = np.zeros(len(self.x))
-            ddot_old = np.zeros(len(self.x))
-            hill_old = np.zeros(len(self.x))
-    
-        RHS_old = ddot_old - edot_old + hill_old
-        
-        
-        # compute new values
-        # create numpy array of glacier x-coordinates; make sure they are properly 
-        # sorted
-        index = np.argsort(x.dat.data)
-        xGlacier = x.dat.data[index]
-        bedGlacier = b.dat.data[index]
-        uGlacier = icepack.depth_average(u).dat.data[index]
-    
-        # mask out areas where the ice is less than 10 m thick, then extract melt rate
-        # at glacier x-coordinates
-        iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
-        # meltRate = icepack.interpolate(conditional(a>0, 0, -a), Q)
-        runoff = icepack.interpolate(param.b_max-a, Q)
-        runoff = icepack.interpolate(runoff*iceMask, Q)
-        runoff = runoff.dat.data[index]
-    
-        runoffInterpolator = interp1d(xGlacier, runoff, fill_value=np.array([0]), kind='cubic', bounds_error=False)
-        runoff = runoffInterpolator(self.x)
-    
-        w = width(self.x)
-        
-        # determine subglacial charge per unit width on the sediment model grid points
-        dx = self.x[1] 
-        self.Qw = cumtrapz(runoff*w, dx=dx, initial=0)/w # subglacial discharge, calculated from balance rate
-
-        # delta_s = [np.min((x, 1)) for x in self.H] # erosion goes to 0 if sediment thickness is 0
-        delta_s = (1-np.exp(-self.H)) # similar to what Brinkerhoff has in code?
-        
-        # effective thickness is water depth if not glacier at the grid point
-        # allows for some small erosion in front of the glacier, especially if the water gets shallow
-        h_eff = paramSed.h_eff*np.ones(len(self.x)) 
-        
-        index = self.x>np.max(xGlacier)
-        h_eff[index] = -(self.H[index]+self.zBedrock[index]) 
-        
-        self.erosionRate = paramSed.c * self.Qw**2/h_eff**3 * delta_s
-        # self.erosionRate[self.x > xGlacier[-1]] = 0 # no erosion in front of the glacier; only works for tidewater, but okay because no erosion when land-terminating
-    
-    
-        # solve for sediment transport with left-sided difference
-        d = self.Qw + dx*paramSed.w
-        d[0] = 1
-        d[-1] = 1
-        
-        d_left = -self.Qw[1:]
-        d_left[-1] = 0
-        
-        diagonals = [d_left, d]
-        D = sparse.diags(diagonals, [-1,0]).toarray()
-        
-        f = dx*self.Qw*self.erosionRate
-        f[0] = 0
-        f[1] = 0
-        
-        Qs = np.linalg.solve(D,f)
-        self.Qs = Qs
-    
-    
-        # test higher water flux in the fjord
-        #self.Qw[self.x > xGlacier[-1]] = 2*self.Qw[self.x > xGlacier[-1]]
-        self.Qw[self.x > xGlacier[-1]] += -bedGlacier[-1]*uGlacier[-1]*0.5 # add more buoyancy forcing?
-        
-        # end test
-        
-        self.depositionRate = np.zeros(len(Qs))
-        self.depositionRate[self.Qw>0] = paramSed.w*Qs[self.Qw>0]/self.Qw[self.Qw>0]
-    
-        zBed = self.H+self.zBedrock # elevation of glacier bed from previous time step
-    
-        # calculate bed curvature for hillslope diffusion; dz^2/dx^2(zBed)
-        zBed_curvature = (zBed[2:]-2*zBed[1:-1]+zBed[:-2])/dx**2
-        zBed_left = (zBed[2]-2*zBed[1]+zBed[0])/dx**2
-        zBed_right = (zBed[-1]-2*zBed[-2]+zBed[-3])/dx**2
-    
-        zBed_curvature = np.concatenate(([zBed_left], zBed_curvature, [zBed_right]))
-    
-        # self.hillslope = paramSed.k*(1-np.exp(-self.H/10))*zBed_curvature*np.sign(self.H)
-        # redefine delta_a
-        delta_s = (1-np.exp(-self.H/10))
-        self.hillslope = paramSed.k*zBed_curvature*delta_s
-        
-        
-        self.dHdt = self.depositionRate - self.erosionRate + self.hillslope
-        RHS_new = self.dHdt
-    
-        theta = 1 # theta = 1 => backwards euler; theta = 0 => forward euler; theta = 0.5 => Crank-Nicolson
-        # backwards euler seems to work best
-        res = H_guess - H_old - dt*(theta*RHS_new + (1-theta)*RHS_old)
-        
-        return(res)
-
-    def __sedTransportImplicit2(self, H_guess, x, h, a, b, u, Q, dt):
         # use Backward Euler
         
         
@@ -672,7 +564,7 @@ class sedModel:
         sedH_interpolator = interp1d(self.x, self.H, kind='linear', fill_value='extrapolate')
         sedBedrock_interpolator = interp1d(self.x, self.zBedrock, kind='linear', fill_value='extrapolate')   
         
-        self.x = np.arange(0, param.L, dx)
+        self.x = np.arange(0, param.Lsed, dx)
         self.H = sedH_interpolator(self.x) # sediment thickness on extended glacier grid
         H_old = self.H
         
@@ -738,7 +630,7 @@ class sedModel:
     
         # self.hillslope = paramSed.k*(1-np.exp(-self.H/10))*zBed_curvature*np.sign(self.H)
         # redefine delta_a
-        delta_s = (1-np.exp(-H_guess/10))
+        # delta_s = (1-np.exp(-H_guess/10))
         self.hillslope = paramSed.k*zBed_curvature*delta_s
         
         self.dHdt = self.depositionRate - self.erosionRate + self.hillslope

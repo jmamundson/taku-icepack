@@ -55,7 +55,7 @@ _, tideLine = func.bedrock(x, Q=Q) #
 
 # initialize sediment model to fill fjord at level equal to the base of the terminus
 # (also requires that terminus be in the water) 
-sed = func.sedModel(param.L, -b.dat.data[-1]-10)
+sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
 # sed.H[sed.H<2] = 2
 
 # set up hybrid model solver with custom friction function
@@ -170,7 +170,7 @@ for step in tqdm.trange(num_timesteps):
         # axes[1,1].plot(sed.x, sed.depositionRate, color=plt.cm.viridis(color_id[step]), linestyle='--', label='Deposition rate')
         # axes[1,1].plot(sed.x, sed.hillslope, color=plt.cm.viridis(color_id[step]), linestyle=':', label='Deposition rate')
     
-    basename = './results/mature/mature_' + "{:04}".format(step)
+    basename = './results/mature/mature2_' + "{:04}".format(step)
     # filename = './results/mature/mature_' + "{:03}".format(step) + '.h5'
     with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
         checkpoint.save_mesh(mesh)

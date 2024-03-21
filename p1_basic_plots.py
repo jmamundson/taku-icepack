@@ -25,8 +25,8 @@ import glob
 import pickle
 
 #%% 
-files = sorted(glob.glob('./results/mature/*h5'))
-filesSed = sorted(glob.glob('./results/mature/*.pickle'))
+files = sorted(glob.glob('./results/mature/mature2*.h5'))
+filesSed = sorted(glob.glob('./results/mature/mature2*.pickle'))
 
 plt.ioff()
 
@@ -37,7 +37,7 @@ h_0 = np.zeros(len(files))
 # lastfile = 199
 #for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
 # for j in np.arange(0:len(files)): #np.linspace(0, 99, 100, endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
-for j in np.arange(0,100):#len(files)):
+for j in np.arange(0, len(files), 2):#len(files)):
     
     with firedrake.CheckpointFile(files[j], "r") as checkpoint:
         mesh = checkpoint.load_mesh(name="mesh")
@@ -73,7 +73,7 @@ for j in np.arange(0,100):#len(files)):
     
     axes[0,0].set_xlabel('Longitudinal Coordinate [km]')
     axes[0,0].set_ylabel('Elevation [m]')
-    axes[0,0].set_xlim(np.array([20,40]))
+    axes[0,0].set_xlim(np.array([20,60]))
     axes[0,0].set_ylim(np.array([-500,1000]))
     
     axes[1,0].set_xlabel('Longitudinal Coordinate [km]')
