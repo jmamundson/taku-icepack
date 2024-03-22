@@ -55,7 +55,7 @@ _, tideLine = func.bedrock(x, Q=Q) #
 
 # initialize sediment model to fill fjord at level equal to the base of the terminus
 # (also requires that terminus be in the water) 
-sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
+sed = func.sedModel(param.Lsed, -b.dat.data[-1]-1)
 # sed.H[sed.H<2] = 2
 
 # set up hybrid model solver with custom friction function
@@ -69,7 +69,7 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 200
+years = 300
 dt = 0.5 #param.dt
 num_timesteps = int(years/dt)
 
@@ -97,7 +97,7 @@ length[0] = L
 
 time = np.linspace(0, num_timesteps*dt, num_timesteps+1, endpoint=True)
 
-
+#%%
 for step in tqdm.trange(num_timesteps):
     # solve for velocity
     u = solver.diagnostic_solve(
@@ -145,7 +145,9 @@ for step in tqdm.trange(num_timesteps):
         s = icepack.compute_surface(thickness = h, bed = b)
         
     L = L_new # reset the length
-    length[step+1] = L
+    #length[step+1] = L
+
+    print(' L: ' + '{:.2f}'.format(L*1e-3) + ' km')
 
     zb = firedrake.interpolate(s - h, Q) # glacier bottom; not the same as the bedrock function if floating
 

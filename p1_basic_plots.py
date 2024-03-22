@@ -25,8 +25,8 @@ import glob
 import pickle
 
 #%% 
-files = sorted(glob.glob('./results/mature/mature2*.h5'))
-filesSed = sorted(glob.glob('./results/mature/mature2*.pickle'))
+files = sorted(glob.glob('./results/mature/mature*.h5'))
+filesSed = sorted(glob.glob('./results/mature/mature*.pickle'))
 
 plt.ioff()
 

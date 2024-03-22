@@ -8,6 +8,7 @@
 #   2. too much deposition at the terminus
 #   3. "oscillating" behavior if grid size too small    
 # someway to reduce erosion if too much curvature? maybe make hs larger?
+# make sure no sediment is deposited up stream
 
 import numpy as np
 
@@ -74,7 +75,7 @@ class paramsSed:
     
     def __init__(self):
         self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 1.5e-12 # Brinkerhoff used 2e-12
+        self.c = 2e-12 # Brinkerhoff used 2e-12
         self.w = 600 # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 10000 # sediment diffusivity; Brinkerhoff used 5000
 
@@ -615,7 +616,7 @@ class sedModel:
     
     
         # test higher water flux in the fjord
-        self.Qw[self.x > xGlacier[-1]] = 2*self.Qw[self.x > xGlacier[-1]]
+        self.Qw[self.x > xGlacier[-1]] = 5*self.Qw[self.x > xGlacier[-1]]
         # self.Qw[self.x > xGlacier[-1]] += -bedGlacier[-1]*uGlacier[-1]*0.5 # add more buoyancy forcing?
         
         # end test
