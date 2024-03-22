@@ -70,24 +70,24 @@ solver = icepack.solvers.FlowSolver(model, **opts)
 
 
 years = 200
-dt = param.dt
+dt = 0.5 #param.dt
 num_timesteps = int(years/dt)
 
 # set up basic figure
-fig, axes = plt.subplots(2, 2)
-axes[0,0].set_xlabel('Longitudinal Coordinate [m]')
-axes[0,0].set_ylabel('Speed [m/yr]')
-axes[1,0].set_xlabel('Longitudinal Coordinate [m]')
-axes[1,0].set_ylabel('Elevation [m]')
-axes[0,1].set_xlabel('Longitudinal Coordinate [m]')
-axes[0,1].set_ylabel('Sediment thickness [m]')
-axes[1,1].set_xlabel('Longitudinal coordinate [m]')
-axes[1,1].set_ylabel('Erosion or deposition rate [m a$^{-1}$]')
-firedrake.plot(icepack.depth_average(b), edgecolor='k', axes=axes[1,0]);
-# axes[1].plot(x.dat.data, b.dat.data, 'k')
-plt.tight_layout();
+# fig, axes = plt.subplots(2, 2)
+# axes[0,0].set_xlabel('Longitudinal Coordinate [m]')
+# axes[0,0].set_ylabel('Speed [m/yr]')
+# axes[1,0].set_xlabel('Longitudinal Coordinate [m]')
+# axes[1,0].set_ylabel('Elevation [m]')
+# axes[0,1].set_xlabel('Longitudinal Coordinate [m]')
+# axes[0,1].set_ylabel('Sediment thickness [m]')
+# axes[1,1].set_xlabel('Longitudinal coordinate [m]')
+# axes[1,1].set_ylabel('Erosion or deposition rate [m a$^{-1}$]')
+# firedrake.plot(icepack.depth_average(b), edgecolor='k', axes=axes[1,0]);
+# # axes[1].plot(x.dat.data, b.dat.data, 'k')
+# plt.tight_layout();
 
-color_id = np.linspace(0,1,num_timesteps)
+# color_id = np.linspace(0,1,num_timesteps)
 
 # param.ELA = param.ELA - 1 # lower the ELA
 
@@ -159,18 +159,20 @@ for step in tqdm.trange(num_timesteps):
      
     solver = icepack.solvers.FlowSolver(model, **opts)
 
-    if step%1==0:
-        firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0,0]);
-        firedrake.plot(icepack.depth_average(s), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
-        firedrake.plot(icepack.depth_average(b), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
-        axes[1,0].plot(np.array([L_new, L_new]), np.array([b.dat.data[-1],s.dat.data[-1]]), color=plt.cm.viridis(color_id[step]))
+    # if step%1==0:
+    #     firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0,0]);
+    #     firedrake.plot(icepack.depth_average(s), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
+    #     firedrake.plot(icepack.depth_average(b), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
+    #     axes[1,0].plot(np.array([L_new, L_new]), np.array([b.dat.data[-1],s.dat.data[-1]]), color=plt.cm.viridis(color_id[step]))
 
-        axes[0,1].plot(sed.x, sed.H, color=plt.cm.viridis(color_id[step]))
-        axes[1,1].plot(sed.x, sed.erosionRate, color=plt.cm.viridis(color_id[step]), label='Erosion rate')
-        # axes[1,1].plot(sed.x, sed.depositionRate, color=plt.cm.viridis(color_id[step]), linestyle='--', label='Deposition rate')
-        # axes[1,1].plot(sed.x, sed.hillslope, color=plt.cm.viridis(color_id[step]), linestyle=':', label='Deposition rate')
+    #     axes[0,1].plot(sed.x, sed.H, color=plt.cm.viridis(color_id[step]))
+    #     axes[1,1].plot(sed.x, sed.erosionRate, color=plt.cm.viridis(color_id[step]), label='Erosion rate')
+    #     # axes[1,1].plot(sed.x, sed.depositionRate, color=plt.cm.viridis(color_id[step]), linestyle='--', label='Deposition rate')
+    #     # axes[1,1].plot(sed.x, sed.hillslope, color=plt.cm.viridis(color_id[step]), linestyle=':', label='Deposition rate')
     
-    basename = './results/mature/mature2_' + "{:04}".format(step)
+    
+    
+    basename = './results/mature/mature_' + "{:04}".format(step)
     # filename = './results/mature/mature_' + "{:03}".format(step) + '.h5'
     with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
         checkpoint.save_mesh(mesh)
@@ -184,3 +186,5 @@ for step in tqdm.trange(num_timesteps):
     with open(basename + '_sed.pickle', 'wb') as file:
         pickle.dump(sed, file)
         file.close()    
+
+    func.basicPlot(x, h, s, u, b, w, sed, basename)

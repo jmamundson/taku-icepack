@@ -37,7 +37,7 @@ h_0 = np.zeros(len(files))
 # lastfile = 199
 #for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
 # for j in np.arange(0:len(files)): #np.linspace(0, 99, 100, endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
-for j in np.arange(0, len(files), 2):#len(files)):
+for j in np.arange(880, len(files), 2):#len(files)):
     
     with firedrake.CheckpointFile(files[j], "r") as checkpoint:
         mesh = checkpoint.load_mesh(name="mesh")

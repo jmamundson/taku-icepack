@@ -7,7 +7,7 @@
 #   1. kink in bed slope at bedrock-sediment transition
 #   2. too much deposition at the terminus
 #   3. "oscillating" behavior if grid size too small    
-
+# someway to reduce erosion if too much curvature? maybe make hs larger?
 
 import numpy as np
 
@@ -22,6 +22,8 @@ import icepack
 
 import xarray
 from scipy.optimize import root
+
+from matplotlib import pyplot as plt
 
 #%% basic constants parameters needed for the model
 
@@ -578,11 +580,13 @@ class sedModel:
         self.Qw = cumtrapz(runoff*w, dx=dx, initial=0)/w # subglacial discharge, calculated from balance rate
     
         # delta_s = [np.min((x, 1)) for x in self.H] # erosion goes to 0 if sediment thickness is 0
-        delta_s = (1-np.exp(-H_guess)) # similar to what Brinkerhoff has in code?
+        delta_s = (1-np.exp(-H_guess/10)) # similar to what Brinkerhoff has in code?
+        
+        alpha = np.gradient(self.zBedrock + H_guess, self.x) # bed slope at next time step
         
         # effective thickness is water depth if not glacier at the grid point
         # allows for some small erosion in front of the glacier, especially if the water gets shallow
-        h_eff = paramSed.h_eff*np.ones(len(self.x)) 
+        h_eff = paramSed.h_eff*np.ones(len(self.x)) * np.exp(5*alpha)
         
         index = self.x>np.max(xGlacier)
         h_eff[index] = -(H_guess[index]+self.zBedrock[index]) 
@@ -631,7 +635,7 @@ class sedModel:
         # self.hillslope = paramSed.k*(1-np.exp(-self.H/10))*zBed_curvature*np.sign(self.H)
         # redefine delta_a
         # delta_s = (1-np.exp(-H_guess/10))
-        self.hillslope = paramSed.k*zBed_curvature*delta_s
+        self.hillslope = paramSed.k*zBed_curvature#*delta_s
         
         self.dHdt = self.depositionRate - self.erosionRate + self.hillslope
         RHS_new = self.dHdt
@@ -642,3 +646,109 @@ class sedModel:
         res = H_guess - H_old - dt*RHS_new
         
         return(res)
+
+
+#%% plotting functions
+
+def basicPlot(x, h, s, u, b, w, sed, basename):
+    
+    plt.ioff()
+    
+    index = np.argsort(x.dat.data)
+    x = x.dat.data[index]*1e-3
+    h = h.dat.data[index]
+    s = s.dat.data[index]
+    u = icepack.depth_average(u).dat.data[index]
+    b = b.dat.data[index]
+    w = w.dat.data[index]*1e-3
+    
+    L = x[-1]
+    
+    fig, axes = plt.subplots(4, 2)
+    fig.set_figwidth(10)
+    fig.set_figheight(8)
+    
+    xlim = np.array([0,60])
+    
+    axes[0,0].set_xlabel('Longitudinal Coordinate [km]')
+    axes[0,0].set_ylabel('Elevation [m]')
+    axes[0,0].set_xlim(np.array([20,60]))
+    axes[0,0].set_ylim(np.array([-500,1000]))
+    
+    axes[1,0].set_xlabel('Longitudinal Coordinate [km]')
+    axes[1,0].set_ylabel('Transverse Coordinate [km]')
+    axes[1,0].set_xlim(xlim)
+    axes[1,0].set_ylim(np.array([-6, 6]))
+    
+    axes[2,0].set_xlabel('Longitudinal Coordinate [km]')
+    axes[2,0].set_ylabel('Speed [m/yr]')
+    axes[2,0].set_xlim(xlim)
+    axes[2,0].set_ylim(np.array([0,2000]))
+    
+    axes[0,1].set_xlabel('Longitudinal Coordinate [km]')
+    axes[0,1].set_ylabel('Flux per width [km$^2$ a$^{-1}$]')
+    axes[0,1].set_xlim(xlim)
+    axes[0,1].set_ylim(np.array([-0.1,0.6]))
+    
+    axes[1,1].set_xlabel('Longitudinal coordinate [km]')
+    axes[1,1].set_ylabel('Rate [m a$^{-1}$]')
+    axes[1,1].set_xlim(xlim)
+    axes[1,1].set_ylim([-10,70])
+    
+    axes[2,1].set_xlabel('Longitudinal coordinate [km]')
+    axes[2,1].set_ylabel('Rate [m a$^{-1}$]')
+    axes[2,1].set_xlim(xlim)
+    axes[2,1].set_ylim([-5, 5])
+    
+    axes[3,1].set_xlabel('Longitudinal coordinate [km]')
+    axes[3,1].set_ylabel('Sediment thickness [m]')
+    axes[3,1].set_xlim(xlim)
+    axes[3,1].set_ylim([0,300])
+    
+    plt.tight_layout()
+    
+    
+    
+    sed.w = width(sed.x)
+    sed.sealevel = np.zeros(len(sed.x))
+    sed.sealevel[sed.zBedrock>0] = sed.zBedrock[sed.zBedrock>0]
+    
+    
+    axes[0,0].fill_between(sed.x*1e-3, sed.zBedrock, sed.zBedrock+sed.H, color='saddlebrown')
+    axes[0,0].fill_between(sed.x*1e-3, sed.sealevel, sed.zBedrock+sed.H, color='cornflowerblue')    
+    axes[0,0].plot(np.concatenate((x,x[::-1])), np.concatenate((s,b[::-1])), 'k')
+    axes[0,0].fill_between(x, s, b, color='w', linewidth=1)
+    axes[0,0].plot(sed.x*1e-3, sed.zBedrock, 'k')
+    
+    
+    
+    axes[1,0].plot(np.array([L,L]), np.array([w[-1]/2,-w[-1]/2]), 'k')
+    axes[1,0].plot(sed.x*1e-3, sed.w/2*1e-3, 'k')
+    axes[1,0].plot(sed.x*1e-3, -sed.w/2*1e-3, 'k')
+    axes[1,0].fill_between(sed.x*1e-3, sed.w/2*1e-3, -sed.w/2*1e-3, color='cornflowerblue')
+    axes[1,0].fill_between(x, w/2, -w/2, color='white')
+    
+    
+    axes[2,0].plot(x, u, 'k')
+    
+    axes[3,0].axis('off')
+    
+    axes[0,1].plot(sed.x*1e-3, sed.Qw*1e-6, 'k', label='subglacial discharge')
+    axes[0,1].plot(sed.x*1e-3, sed.Qs*1e-6, 'k:', label='sediment flux')
+    axes[0,1].legend()
+    
+    
+    axes[1,1].plot(sed.x*1e-3, sed.erosionRate, 'k', label='erosion rate')
+    axes[1,1].plot(sed.x*1e-3, sed.depositionRate, 'k--', label='deposition rate')
+    axes[1,1].legend()
+    
+    
+    axes[2,1].plot(sed.x*1e-3, sed.hillslope, 'k', label='hillslope processes')
+    axes[2,1].plot(sed.x*1e-3, sed.depositionRate-sed.erosionRate, 'k:', label='deposition-erosion')
+    axes[2,1].legend()
+    
+    axes[3,1].plot(sed.x*1e-3, sed.H, 'k')
+
+    plt.savefig(basename + '.png', format='png', dpi=150)
+    plt.close()
+    plt.ion()
