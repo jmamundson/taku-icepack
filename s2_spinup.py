@@ -1,6 +1,3 @@
-# Known issues
-# - height above flotation interpolator not working if haf_desired = 0
-
 import firedrake
 
 import matplotlib.pyplot as plt
@@ -42,9 +39,14 @@ u = func.initial_velocity(x, V)
 w = func.width(x, Q=Q)
 
 # initialize sediment model with sediment thickness of 0
-sed = func.sedModel(param.L, param.sedDepth)
-sed.H = 0*sed.H
-
+sed = func.sedModel(param.Lsed, param.sedDepth)
+sed.H = np.zeros(len(sed.H))
+sed.Qw = np.zeros(len(sed.H))
+sed.Qs = np.zeros(len(sed.H))
+sed.erosionRate = np.zeros(len(sed.H))
+sed.depositionRate = np.zeros(len(sed.H))
+sed.hillslope = np.zeros(len(sed.H))
+sed.dHdt = np.zeros(len(sed.H))
 
 # set up hybrid model solver with custom friction function
 model = icepack.models.HybridModel(friction = schoof_approx_friction)
@@ -57,22 +59,10 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 50
+years = 100
 dt = param.dt
 num_timesteps = int(years/dt)
 
-# set up basic figure
-fig, axes = plt.subplots(2, 1)
-axes[0].set_xlabel('Longitudinal Coordinate [m]')
-axes[0].set_ylabel('Speed [m/yr]')
-axes[0].set_xlim([0,40e3])
-axes[1].set_xlabel('Longitudinal Coordinate [m]')
-axes[1].set_ylabel('Elevation [m]')
-axes[1].set_xlim([0,40e3])
-firedrake.plot(icepack.depth_average(b), edgecolor='k', axes=axes[1]);
-plt.tight_layout();
-
-color_id = np.linspace(0,1,num_timesteps)
 
 # create length and time arrays for storing changes in glacier length
 length = np.zeros(num_timesteps+1)
@@ -80,7 +70,6 @@ length[0] = L
 
 time = np.linspace(0, num_timesteps*dt, num_timesteps, endpoint=True)
 
-volumeOld = 0
 
 for step in tqdm.trange(num_timesteps):
     # solve for velocity
@@ -140,26 +129,10 @@ for step in tqdm.trange(num_timesteps):
      
     solver = icepack.solvers.FlowSolver(model, **opts)
 
-    # areaCrossSectional = icepack.interpolate(h*w, Q)
-    # x_tmp = x.dat.data
-    # index = np.argsort(x_tmp)
-    # x_tmp = x_tmp[index]
-    # areaCrossSectional = areaCrossSectional.dat.data[index]
-    
-    # volume = np.trapz(areaCrossSectional, dx=x_tmp[1])*1e-9
-    
-    # print((volume-volumeOld)/volumeOld)
-    # volumeOld = volume
 
-    if step%10==0:
-        firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0]);
-        firedrake.plot(icepack.depth_average(s), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1]);
-        firedrake.plot(icepack.depth_average(zb), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1]);
-        plt.plot(np.array([L_new, L_new]), np.array([zb.dat.data[-1], s.dat.data[-1]]), color=plt.cm.viridis(color_id[step]))
-    
-   
-    filename = './results/spinup/spinup_' + "{:03}".format(step) + '.h5'
-    with firedrake.CheckpointFile(filename, "w") as checkpoint:
+    basename = './results/spinup/spinup_' + "{:04}".format(step)
+    # filename = './results/spinup/spinup_' + "{:03}".format(step) + '.h5'
+    with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
         checkpoint.save_mesh(mesh)
         checkpoint.save_function(x, name="position")
         checkpoint.save_function(h, name="thickness")
@@ -167,3 +140,5 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(u, name="velocity")
         checkpoint.save_function(b, name="bed")
         checkpoint.save_function(w, name="width")
+
+    func.basicPlot(x, h, s, u, b, w, sed, basename, time[step])

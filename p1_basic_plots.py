@@ -25,20 +25,21 @@ import glob
 import pickle
 
 #%% 
-files = sorted(glob.glob('./results/mature/mature*.h5'))
-filesSed = sorted(glob.glob('./results/mature/mature*.pickle'))
+base = 'premature'
+files = sorted(glob.glob('./results/' + base + '/' + base + '*.h5'))
+filesSed = sorted(glob.glob('./results/' + base + '/' + base + '*.pickle'))
 
 plt.ioff()
 
 b_t = np.zeros(len(files))
 x_t = np.zeros(len(files))
 h_0 = np.zeros(len(files))
+L = np.zeros(len(files))
 
-# lastfile = 199
-#for j in np.linspace(0, lastfile, int(lastfile/1 + 1), endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
-# for j in np.arange(0:len(files)): #np.linspace(0, 99, 100, endpoint=True, dtype=int): #np.arange(0,300):#len(files)):
-for j in np.arange(880, len(files), 2):#len(files)):
-    
+dt = param.dt
+t = np.linspace(0,(len(files)-1)*dt, len(files))
+
+for j in np.arange(0, len(files)):
     with firedrake.CheckpointFile(files[j], "r") as checkpoint:
         mesh = checkpoint.load_mesh(name="mesh")
         x = checkpoint.load_function(mesh, name="position")
@@ -58,101 +59,7 @@ for j in np.arange(880, len(files), 2):#len(files)):
     w = w.dat.data[index]*1e-3
     
     
-    L = x[-1]
-    
-    with open(filesSed[j], 'rb') as file:
-            sed = pickle.load(file)
-            file.close()    
-    
-
-    fig, axes = plt.subplots(4, 2)
-    fig.set_figwidth(10)
-    fig.set_figheight(8)
-    
-    xlim = np.array([0,40])
-    
-    axes[0,0].set_xlabel('Longitudinal Coordinate [km]')
-    axes[0,0].set_ylabel('Elevation [m]')
-    axes[0,0].set_xlim(np.array([20,60]))
-    axes[0,0].set_ylim(np.array([-500,1000]))
-    
-    axes[1,0].set_xlabel('Longitudinal Coordinate [km]')
-    axes[1,0].set_ylabel('Transverse Coordinate [km]')
-    axes[1,0].set_xlim(xlim)
-    axes[1,0].set_ylim(np.array([-6, 6]))
-    
-    axes[2,0].set_xlabel('Longitudinal Coordinate [km]')
-    axes[2,0].set_ylabel('Speed [m/yr]')
-    axes[2,0].set_xlim(xlim)
-    axes[2,0].set_ylim(np.array([0,2000]))
-    
-    axes[0,1].set_xlabel('Longitudinal Coordinate [km]')
-    axes[0,1].set_ylabel('Flux per width [km$^2$ a$^{-1}$]')
-    axes[0,1].set_xlim(xlim)
-    axes[0,1].set_ylim(np.array([-0.1,0.6]))
-    
-    axes[1,1].set_xlabel('Longitudinal coordinate [km]')
-    axes[1,1].set_ylabel('Rate [m a$^{-1}$]')
-    axes[1,1].set_xlim(xlim)
-    axes[1,1].set_ylim([-10,70])
-    
-    axes[2,1].set_xlabel('Longitudinal coordinate [km]')
-    axes[2,1].set_ylabel('Rate [m a$^{-1}$]')
-    axes[2,1].set_xlim(xlim)
-    axes[2,1].set_ylim([-5, 5])
-    
-    axes[3,1].set_xlabel('Longitudinal coordinate [km]')
-    axes[3,1].set_ylabel('Sediment thickness [m]')
-    axes[3,1].set_xlim(xlim)
-    axes[3,1].set_ylim([0,300])
-    
-    plt.tight_layout()
+    L[j] = x[-1]
     
     
-    
-    sed.w = func.width(sed.x)
-    sed.sealevel = np.zeros(len(sed.x))
-    sed.sealevel[sed.zBedrock>0] = sed.zBedrock[sed.zBedrock>0]
-    
-    
-    axes[0,0].fill_between(sed.x*1e-3, sed.zBedrock, sed.zBedrock+sed.H, color='saddlebrown')
-    axes[0,0].fill_between(sed.x*1e-3, sed.sealevel, sed.zBedrock+sed.H, color='cornflowerblue')    
-    axes[0,0].plot(np.concatenate((x,x[::-1])), np.concatenate((s,b[::-1])), 'k')
-    axes[0,0].fill_between(x, s, b, color='w', linewidth=1)
-    axes[0,0].plot(sed.x*1e-3, sed.zBedrock, 'k')
-    
-    
-    
-    axes[1,0].plot(np.array([L,L]), np.array([w[-1]/2,-w[-1]/2]), 'k')
-    axes[1,0].plot(sed.x*1e-3, sed.w/2*1e-3, 'k')
-    axes[1,0].plot(sed.x*1e-3, -sed.w/2*1e-3, 'k')
-    axes[1,0].fill_between(sed.x*1e-3, sed.w/2*1e-3, -sed.w/2*1e-3, color='cornflowerblue')
-    axes[1,0].fill_between(x, w/2, -w/2, color='white')
-    
-    
-    axes[2,0].plot(x, u, 'k')
-    
-    axes[3,0].axis('off')
-    
-    axes[0,1].plot(sed.x*1e-3, sed.Qw*1e-6, 'k', label='subglacial discharge')
-    axes[0,1].plot(sed.x*1e-3, sed.Qs*1e-6, 'k:', label='sediment flux')
-    axes[0,1].legend()
-    
-    
-    axes[1,1].plot(sed.x*1e-3, sed.erosionRate, 'k', label='erosion rate')
-    axes[1,1].plot(sed.x*1e-3, sed.depositionRate, 'k--', label='deposition rate')
-    axes[1,1].legend()
-    
-    
-    axes[2,1].plot(sed.x*1e-3, sed.hillslope, 'k', label='hillslope processes')
-    axes[2,1].plot(sed.x*1e-3, sed.depositionRate-sed.erosionRate, 'k:', label='deposition-erosion')
-    axes[2,1].legend()
-    
-    axes[3,1].plot(sed.x*1e-3, sed.H, 'k')
-    
-    b_t[j] = b[-1]
-    x_t[j] = x[-1]
-    h_0[j] = h[0]
-    
-    plt.savefig(files[j][:-2] + 'png', format='png', dpi=150)
-    plt.close()
+plt.plot(t, L)

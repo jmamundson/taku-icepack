@@ -18,6 +18,8 @@ import tqdm
 
 import func
 from func import schoof_approx_friction, side_drag, constants, params
+from func import sediment
+
 constant = constants()
 param = params()
 
@@ -55,8 +57,10 @@ _, tideLine = func.bedrock(x, Q=Q) #
 
 # initialize sediment model to fill fjord at level equal to the base of the terminus
 # (also requires that terminus be in the water) 
-sed = func.sedModel(param.Lsed, -b.dat.data[-1]-1)
+# sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
 # sed.H[sed.H<2] = 2
+sed = sediment(-b.dat.data[-1]-10) # initialize the sediment model
+
 
 # set up hybrid model solver with custom friction function
 model = icepack.models.HybridModel(friction = schoof_approx_friction)
@@ -69,33 +73,17 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 300
-dt = 0.5 #param.dt
+years = 400
+dt = param.dt
 num_timesteps = int(years/dt)
-
-# set up basic figure
-# fig, axes = plt.subplots(2, 2)
-# axes[0,0].set_xlabel('Longitudinal Coordinate [m]')
-# axes[0,0].set_ylabel('Speed [m/yr]')
-# axes[1,0].set_xlabel('Longitudinal Coordinate [m]')
-# axes[1,0].set_ylabel('Elevation [m]')
-# axes[0,1].set_xlabel('Longitudinal Coordinate [m]')
-# axes[0,1].set_ylabel('Sediment thickness [m]')
-# axes[1,1].set_xlabel('Longitudinal coordinate [m]')
-# axes[1,1].set_ylabel('Erosion or deposition rate [m a$^{-1}$]')
-# firedrake.plot(icepack.depth_average(b), edgecolor='k', axes=axes[1,0]);
-# # axes[1].plot(x.dat.data, b.dat.data, 'k')
-# plt.tight_layout();
-
-# color_id = np.linspace(0,1,num_timesteps)
-
-# param.ELA = param.ELA - 1 # lower the ELA
 
 # create length and time arrays for storing changes in glacier length
 length = np.zeros(num_timesteps+1)
 length[0] = L
 
 time = np.linspace(0, num_timesteps*dt, num_timesteps+1, endpoint=True)
+
+num_timesteps = 100
 
 #%%
 for step in tqdm.trange(num_timesteps):
@@ -123,8 +111,10 @@ for step in tqdm.trange(num_timesteps):
         accumulation = a_mod)
     
     # erode the bed
-    b = sed.sedTransportImplicit(x, h, a, b, u, Q, dt)
-
+    # b = sed.sedTransportImplicit(x, h, a, b, u, Q, dt)
+    b = sed.transport(x, b, a, w, h, dt)
+    
+    
     # determine surface elevation
     s = icepack.compute_surface(thickness = h, bed = b)
     
@@ -160,19 +150,6 @@ for step in tqdm.trange(num_timesteps):
     }
      
     solver = icepack.solvers.FlowSolver(model, **opts)
-
-    # if step%1==0:
-    #     firedrake.plot(icepack.depth_average(u), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[0,0]);
-    #     firedrake.plot(icepack.depth_average(s), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
-    #     firedrake.plot(icepack.depth_average(b), edgecolor=plt.cm.viridis(color_id[step]), axes=axes[1,0]);
-    #     axes[1,0].plot(np.array([L_new, L_new]), np.array([b.dat.data[-1],s.dat.data[-1]]), color=plt.cm.viridis(color_id[step]))
-
-    #     axes[0,1].plot(sed.x, sed.H, color=plt.cm.viridis(color_id[step]))
-    #     axes[1,1].plot(sed.x, sed.erosionRate, color=plt.cm.viridis(color_id[step]), label='Erosion rate')
-    #     # axes[1,1].plot(sed.x, sed.depositionRate, color=plt.cm.viridis(color_id[step]), linestyle='--', label='Deposition rate')
-    #     # axes[1,1].plot(sed.x, sed.hillslope, color=plt.cm.viridis(color_id[step]), linestyle=':', label='Deposition rate')
-    
-    
     
     basename = './results/mature/mature_' + "{:04}".format(step)
     # filename = './results/mature/mature_' + "{:03}".format(step) + '.h5'
@@ -185,8 +162,8 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(b, name="bed")
         checkpoint.save_function(w, name="width")
         
-    with open(basename + '_sed.pickle', 'wb') as file:
-        pickle.dump(sed, file)
-        file.close()    
+    # with open(basename + '_sed.pickle', 'wb') as file:
+    #     pickle.dump(sed, file)
+    #     file.close()    
 
-    func.basicPlot(x, h, s, u, b, w, sed, basename)
+    func.basicPlot(x, h, s, u, b, w, sed, basename, time[step])
