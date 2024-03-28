@@ -585,6 +585,9 @@ class sediment:
         Qw =  calcQw(a, w, h) # runoff on the glacier domain
         
         # determine runoff on sediment domain
+        # for erosion purposes, no runoff beyond the end of the glacier
+        # however, for deposition we need to account for transport by fjord 
+        # circulation, which is included later
         self.Qw = icepack.interpolate(0*self.bedrock, self.Q)
         self.Qw.dat.data[:len(Qw.dat.data)] = Qw.dat.data
         
@@ -592,41 +595,24 @@ class sediment:
         bed = icepack.interpolate(self.bedrock+self.H, self.Q)
         alpha = bed.dx(0) # bed slope
 
-        h_eff = paramSed.h_eff * exp(10*alpha) # !!! might need some more thought !!!
+        self.h_eff = icepack.interpolate(paramSed.h_eff * exp(10*alpha), self.Q) # !!! might need some more thought !!!
 
-        delta_s = (1-exp(-self.H/10))
+        self.delta_s = icepack.interpolate(1-exp(-self.H/10), self.Q)
         
-        self.erosionRate = icepack.interpolate(paramSed.c * self.Qw**2/h_eff**3 * delta_s, self.Q)
+        self.erosionRate = icepack.interpolate(paramSed.c * self.Qw**2/self.h_eff**3 * self.delta_s, self.Q)
         
         # compute sediment flux; don't want discharge to go to zero at the terminus, so first redefine Qw
         self.Qw = icepack.interpolate(conditional(self.x>np.max(x_), 5*np.max(self.Qw.dat.data), self.Qw), self.Q)
         
         self.calcQs()
         
-        self.depositionRate = icepack.interpolate(paramSed.w * self.Qs / self.Qw * delta_s, self.Q)
+        self.depositionRate = icepack.interpolate(paramSed.w * self.Qs / self.Qw, self.Q)
         
         # not yet including hillslope diffusion, and should be implicit
         self.dHdt = icepack.interpolate(self.depositionRate - self.erosionRate, self.Q)
         
-        # set up backward Euler
-        v = firedrake.TestFunction(self.Q)
+        self.calcH(dt)
         
-        H_ = firedrake.Function(self.Q, name='thickness')
-        H = firedrake.Function(self.Q, name='thicknessNext')
-        
-        H_.assign(self.H)
-        H.assign(H_)
-        
-        LHS = (H - H_)/dt * v *dx 
-        RHS = self.dHdt * v * dx
-        
-        firedrake.solve(LHS == RHS, H)
-        H_.assign(H) # redu
-        
-        self.H.assign(H)
-        
-        
-        #self.H = icepack.interpolate(self.H + self.dHdt*dt, self.Q)
         
         # now need to fix the glacier bed to account for erosion and deposition
         bed = icepack.interpolate(self.H+self.bedrock, self.Q).dat.data
@@ -643,6 +629,22 @@ class sediment:
         return(b)
     
     
+    def calcH(self, dt):
+        
+        H_ = firedrake.Function(self.Q, name='thickness')
+        H = firedrake.Function(self.Q, name='thicknessNext')
+        
+        v = firedrake.TestFunction(self.Q)
+        
+        H_.assign(self.H)
+        H.assign(self.H)
+        
+        LHS = ((H-H_)/dt*v + paramSed.k*(H.dx(0)+self.bedrock.dx(0))*self.delta_s*v.dx(0) + (self.erosionRate - self.depositionRate)*v ) * dx
+        
+        firedrake.solve(LHS == 0, H)
+        
+        self.H = H
+        
         
         
     def calcQs(self):
@@ -651,21 +653,39 @@ class sediment:
 
         '''
         
-        u = firedrake.TrialFunction(self.Q) # unknown that we wish to determine
+        # nonlinear?
+        Qs = firedrake.Function(self.Q)
+        Qs.assign(self.Qw)
         
         v = firedrake.TestFunction(self.Q)
-
-        # left and right hand sides of variational form
-        LHS = ( self.Qw * u.dx(0) + paramSed.w * u ) * v * dx
-        RHS = ( self.Qw * self.erosionRate ) * v * dx
         
-        Qs = firedrake.Function(self.Q) # create empty function to hold the solution
+        #LHS = ( self.Qw*Qs.dx(0) + paramSed.w*Qs - self.Qw*self.erosionRate) * v *dx
+        LHS = (-Qs*v.dx(0) + Qs*paramSed.w/(self.Qw+1e-10)*v - self.erosionRate*v ) * dx
         
         bc = firedrake.DirichletBC(self.Q, 0, 1)
-        
-        firedrake.solve(LHS == RHS, Qs, bcs=[bc])
+        firedrake.solve(LHS == 0, Qs, bcs=[bc])
         
         self.Qs = Qs
+        
+        
+        
+        
+        # linear?
+        # u = firedrake.TrialFunction(self.Q) # unknown that we wish to determine
+        
+        # v = firedrake.TestFunction(self.Q)
+
+        # # left and right hand sides of variational form
+        # LHS = ( self.Qw * u.dx(0) + paramSed.w * u ) * v * dx
+        # RHS = ( self.Qw * self.erosionRate ) * v * dx
+        
+        # Qs = firedrake.Function(self.Q) # create empty function to hold the solution
+        
+        # bc = firedrake.DirichletBC(self.Q, 0, 1)
+        
+        # firedrake.solve(LHS == RHS, Qs, bcs=[bc])
+        
+        # self.Qs = Qs
         
     
     
@@ -712,6 +732,19 @@ def calcQw(a, w, h):
         
         
         
+     
+        
+     
+        
+     
+        
+     
+        
+     
+        
+     
+        
+     
         
         
         
