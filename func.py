@@ -199,50 +199,7 @@ def initial_velocity(x, V):
     return(u0)
 
 
-def massBalance(x, s, u, h, w, param):
-    '''
-    Mass balance profile. Returns function space for the "adjusted" mass 
-    balance rate. For a flow line model,
-    
-    dh/dt = a - 1/w * d/dx(uhw) = a - d/dx(uh) - uh/w * dw/dx
-    
-    This code combines a - uh/w * dw/dx into one term, the adjusted mass
-    balance rate, so that the prognostic solver doesn't need to worry about
-    variations in glacier width.
 
-    Parameters
-    ----------
-    x, s, u, h, w : firedrake functions for the longitudinal coordinates,
-        surface elevation, velocity, thickness, and width
-    param : class instance that contains: 
-        param.b_max : maximum mass balance rate (at high elevations) [m a^{-1}]
-        param.b_gradient : mass balance gradient [m a^{1} / m]
-        param.ELA : equilbrium line altitude [m]
-
-    Returns
-    -------
-    a, a_mod : firedrake functions for the mass balance rate and adjusted mass 
-        balance rate
-    '''
-    
-    a_max = param.a_max
-    a_gradient = param.a_gradient
-    ELA = param.ELA
-    
-    k = 0.005 # smoothing factor
-        
-    z_threshold = a_max/a_gradient + ELA # location where unsmoothed balance rate switches from nonzero to zero
-
-    # unmodified mass balance rate    
-    a = firedrake.interpolate(a_gradient*((s-ELA) - 1/(2*k) * ln(1+exp(2*k*(s - z_threshold)))), s.function_space())
-    
-    # width gradient
-    dwdx = icepack.interpolate(w.dx(0), w.function_space())
-    
-    # modified mass balance rate
-    a_mod = icepack.interpolate(a-u*h/w*dwdx, h.function_space())
-    
-    return a, a_mod
 
 
 
@@ -317,125 +274,7 @@ def find_endpoint_haf(L, h, s):
     return L_new
 
 
-def regrid(n, x, L, L_new, h, u, sed):
-    '''
-    Create new mesh and interpolate functions onto the new mesh
-    
-    Parameters
-    ----------
-    n : number of grid points
-    L : length of source function [m]
-    L_new : length of destination function [m]
-    h, u : firedrake thickness and velocity functions [m; m a^{-1}]
-    sed : instance of the sediment model class
-        
-    Returns
-    -------
-    Q, V : destination scalar and vector function spaces
-    x, h, u, b, s, w : destination position, thickness, velocity, bed, surface, and width functions
-    mesh : destination mesh
-    '''
-    
-    x_old = x # need to keep previous position function
-    
-    # Initialize mesh and mesh spaces
-    mesh1d = firedrake.IntervalMesh(n, L_new)
-    mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
-    Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
-    V = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
-    
 
-    x_sc, z_sc = firedrake.SpatialCoordinate(mesh)
-    x = firedrake.interpolate(x_sc, Q)
-    # z = firedrake.interpolate(z_sc, Q)
-    
-    xSed = sed.x.dat.data
-    index = np.argsort(xSed)
-    xSed = xSed[index]
-    bedSed = sed.H.dat.data[index] + sed.bedrock.dat.data[index]
-    
-    # zBed_interpolator = interp1d(sed.x, sed.H+sed.zBedrock, kind='linear') # create interpolator to put bed elevation into a firedrake function
-    zBed_interpolator = interp1d(xSed, bedSed, kind='quadratic') # create interpolator to put bed elevation into a firedrake function
-    zBed_xarray = xarray.DataArray(zBed_interpolator(x.dat.data), [x.dat.data], 'x')
-    b = icepack.interpolate(zBed_xarray, Q)
-
-    # remesh thickness and velocity
-    h =  adjust_function(h, x_old, L, L_new, Q)
-    u =  adjust_function(u, x_old, L, L_new, V)
-
-    # compute new surface based on thickness and bed; this determines whether
-    # or not the ice is floating    
-    s = icepack.compute_surface(thickness = h, bed = b) 
-    
-    w = width(x, Q=Q)
-    
-    return Q, V, h, u, b, s, w, mesh, x
-
-
-
-def adjust_function(func_src, x, L, L_new, funcspace_dest):
-    '''
-    Shrinks function spaces.
-
-    Parameters
-    ----------
-    func_src : source function
-    x : old position function [m]
-    L : length of source function [m]
-    L_new : length of destination function [m]
-    funcspace_dest : destination function
-
-    Returns
-    -------
-    func_dest : destination function
-
-    '''
-    
-    x = x.dat.data
-    index = np.argsort(x)
-    x = x[index]
-        
-    # extract data from func_src
-    data = func_src.dat.data
-    
-    # need to do this differently if the function space is a scalar or vector
-    if funcspace_dest.topological.name=='velocity':
-        data_len = int(len(data)/3)
-    else:
-        data_len = len(data)
-    
-    x = np.linspace(0, L, data_len, endpoint=True)
-    x_new = np.linspace(0, L_new, data_len, endpoint=True) # new grid points
-
-    
-    # Interpolate data from x to x_new
-    if funcspace_dest.topological.name=='velocity':
-        # velocity is defined at three vertical grid points, and the data is ordered
-        # [bottom, middle, top, bottom, middle, top, ...]
-        #
-        # Not sure how to use icepack.interpolate to create this 2D grid.
-        # Instead this hack just uses the mean velocity. This is fine since
-        # for plotting purposes I only want the the mean velocity, and the mean
-        # velocity is a good starting point for the next iteration.
-        
-        u_ = icepack.depth_average(func_src).dat.data
-        u_ = u_[index]
-        
-        data_interpolator = interp1d(x, u_, kind='linear', fill_value='extrapolate')
-        data_new = data_interpolator(x_new)
-        
-    else:
-        data_interpolator = interp1d(x, data[index], kind='linear', fill_value='extrapolate')
-        data_new = data_interpolator(x_new)
-    
-    
-    # Convert f_data_dest into a firedrake function on destination function space funcspace_dest
-    temp_dest = xarray.DataArray(data_new, [x_new], 'x')
-    func_dest = icepack.interpolate(temp_dest, funcspace_dest)
-
-    func_dest.dat.data[-2:] = temp_dest[-2:] # sometimes last grid points aren't correctly interpolated [WHY?]
-    
-    return func_dest
 
 
 #%%
@@ -484,12 +323,198 @@ def side_drag(w):
 
     return Cs
 
+
+#%% glacier model
+class glacier:
+    
+    def __init__(self):
+        L = param.L
+        self.mesh1d = firedrake.IntervalMesh(param.n, L)
+        self.mesh = firedrake.ExtrudedMesh(self.mesh1d, layers=1, name="mesh")
+
+        # set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh
+        self.Q = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="R", vdegree=0)
+        self.V = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
+
+        # create scalar functions for the spatial coordinates
+        x_sc, z_sc = firedrake.SpatialCoordinate(self.mesh)
+        self.x = firedrake.interpolate(x_sc, self.Q)
+        self.z = firedrake.interpolate(z_sc, self.Q)
+
+        # create initial geometry
+        self.b, self.tideLine = bedrock(self.x, Q=self.Q) 
+        self.h = initial_thickness(self.x, self.Q)                  
+        self.s = icepack.compute_surface(thickness = self.h, bed = self.b) 
+        self.u = initial_velocity(self.x, self.V)
+        self.w = width(self.x, Q=self.Q)
+    
+    def regrid(self, n, L, L_new, sed):
+        '''
+        Create new mesh and interpolate functions onto the new mesh
+        
+        Parameters
+        ----------
+        n : number of grid points
+        L : length of source function [m]
+        L_new : length of destination function [m]
+        h, u : firedrake thickness and velocity functions [m; m a^{-1}]
+        sed : instance of the sediment model class
+            
+        Returns
+        -------
+        Q, V : destination scalar and vector function spaces
+        x, h, u, b, s, w : destination position, thickness, velocity, bed, surface, and width functions
+        mesh : destination mesh
+        '''
+        
+        x_old = self.x # need to keep previous position function
+        
+        # Initialize mesh and mesh spaces
+        self.mesh1d = firedrake.IntervalMesh(n, L_new)
+        self.mesh = firedrake.ExtrudedMesh(self.mesh1d, layers=1, name="mesh")
+        self.Q = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="R", vdegree=0)
+        self.V = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
+        
+
+        x_sc, z_sc = firedrake.SpatialCoordinate(self.mesh)
+        self.x = firedrake.interpolate(x_sc, self.Q)
+        self.z = firedrake.interpolate(z_sc, self.Q)
+        
+        xSed = sed.x.dat.data
+        index = np.argsort(xSed)
+        xSed = xSed[index]
+        bedSed = sed.H.dat.data[index] + sed.bedrock.dat.data[index]
+        
+        # zBed_interpolator = interp1d(sed.x, sed.H+sed.zBedrock, kind='linear') # create interpolator to put bed elevation into a firedrake function
+        zBed_interpolator = interp1d(xSed, bedSed, kind='quadratic') # create interpolator to put bed elevation into a firedrake function
+        zBed_xarray = xarray.DataArray(zBed_interpolator(self.x.dat.data), [self.x.dat.data], 'x')
+        self.b = icepack.interpolate(zBed_xarray, self.Q)
+
+        # remesh thickness and velocity
+        self.h =  self.__adjust_function(self.h, x_old, L, L_new, self.Q)
+        self.u =  self.__adjust_function(self.u, x_old, L, L_new, self.V)
+
+        # compute new surface based on thickness and bed; this determines whether
+        # or not the ice is floating    
+        self.s = icepack.compute_surface(thickness = self.h, bed = self.b) 
+        
+        self.w = width(self.x, Q=self.Q)
+        
+        
+
+
+
+    def __adjust_function(self, func_src, x_old, L, L_new, funcspace_dest):
+        '''
+        Shrinks function spaces.
+
+        Parameters
+        ----------
+        func_src : source function
+        x : old position function [m]
+        L : length of source function [m]
+        L_new : length of destination function [m]
+        funcspace_dest : destination function
+
+        Returns
+        -------
+        func_dest : destination function
+
+        '''
+        
+        x = x_old.dat.data
+        index = np.argsort(x)
+        x = x[index]
+            
+        # extract data from func_src
+        data = func_src.dat.data
+        
+        # need to do this differently if the function space is a scalar or vector
+        if funcspace_dest.topological.name=='velocity':
+            data_len = int(len(data)/3)
+        else:
+            data_len = len(data)
+        
+        x = np.linspace(0, L, data_len, endpoint=True) # !!! redundant?
+        x_new = np.linspace(0, L_new, data_len, endpoint=True) # new grid points
+
+        
+        # Interpolate data from x to x_new
+        if funcspace_dest.topological.name=='velocity':
+            # velocity is defined at three vertical grid points, and the data is ordered
+            # [bottom, middle, top, bottom, middle, top, ...]
+            #
+            # Not sure how to use icepack.interpolate to create this 2D grid.
+            # Instead this hack just uses the mean velocity. This is fine since
+            # for plotting purposes I only want the the mean velocity, and the mean
+            # velocity is a good starting point for the next iteration.
+            
+            u_ = icepack.depth_average(func_src).dat.data
+            u_ = u_[index]
+            
+            data_interpolator = interp1d(x, u_, kind='linear', fill_value='extrapolate')
+            data_new = data_interpolator(x_new)
+            
+        else:
+            data_interpolator = interp1d(x, data[index], kind='linear', fill_value='extrapolate')
+            data_new = data_interpolator(x_new)
+        
+        
+        # Convert f_data_dest into a firedrake function on destination function space funcspace_dest
+        temp_dest = xarray.DataArray(data_new, [x_new], 'x')
+        func_dest = icepack.interpolate(temp_dest, funcspace_dest)
+
+        func_dest.dat.data[-2:] = temp_dest[-2:] # sometimes last grid points aren't correctly interpolated [WHY?]
+        
+        return(func_dest)    
+    
+    
+    def massBalance(self):
+        '''
+        Mass balance profile. Returns function space for the "adjusted" mass 
+        balance rate. For a flow line model,
+        
+        dh/dt = a - 1/w * d/dx(uhw) = a - d/dx(uh) - uh/w * dw/dx
+        
+        This code combines a - uh/w * dw/dx into one term, the adjusted mass
+        balance rate, so that the prognostic solver doesn't need to worry about
+        variations in glacier width.
+    
+        Parameters
+        ----------
+        x, s, u, h, w : firedrake functions for the longitudinal coordinates,
+            surface elevation, velocity, thickness, and width
+        param : class instance that contains: 
+            param.b_max : maximum mass balance rate (at high elevations) [m a^{-1}]
+            param.b_gradient : mass balance gradient [m a^{1} / m]
+            param.ELA : equilbrium line altitude [m]
+    
+        Returns
+        -------
+        a, a_mod : firedrake functions for the mass balance rate and adjusted mass 
+            balance rate
+        '''
+        
+        a_max = param.a_max
+        a_gradient = param.a_gradient
+        ELA = param.ELA
+        
+        k = 0.005 # smoothing factor
+            
+        z_threshold = a_max/a_gradient + ELA # location where unsmoothed balance rate switches from nonzero to zero
+    
+        # unmodified mass balance rate    
+        self.a = firedrake.interpolate(a_gradient*((self.s-ELA) - 1/(2*k) * ln(1+exp(2*k*(self.s - z_threshold)))), self.Q)
+        
+        # width gradient
+        dwdx = icepack.interpolate(self.w.dx(0), self.Q)
+        
+        # modified mass balance rate
+        self.a_mod = icepack.interpolate(self.a-self.u*self.h/self.w*dwdx, self.Q)
+        
+             
+
 #%% sediment transport model
-# be careful with CFL condition?
-# bed function not updating correctly?
-
-# initialize sediment model
-
 class sediment:
     
     def __init__(self, sedDepth):
@@ -523,7 +548,7 @@ class sediment:
         self.Qs = icepack.interpolate(0*self.H, self.Q)
         
         
-    def transport(self, x, b, a, w, h, dt):
+    def transport(self, glac, dt):
         '''
         
 
@@ -540,8 +565,8 @@ class sediment:
         
         # first need to regrid so that sediment grid points align with glacier grid points
         
-        index = np.argsort(x.dat.data)
-        x_ = x.dat.data[index]
+        index = np.argsort(glac.x.dat.data)
+        x_ = glac.x.dat.data[index]
         
         deltaX = x_[2] # x[2] because using 2nd order finite elements
        
@@ -575,7 +600,7 @@ class sediment:
         
         self.bedrock, _ = bedrock(self.x, Q=self.Q)        
     
-        self.calcQw(a, w, h) # runoff on the glacier domain
+        self.calcQw(glac.a, glac.w, glac.h) # runoff on the glacier domain
         
         
         
@@ -613,9 +638,9 @@ class sediment:
         
         bed_interpolator = interp1d(xBed, bed, kind='linear')
         
-        b.dat.data[:] = bed_interpolator(x.dat.data)
+        glac.b.dat.data[:] = bed_interpolator(glac.x.dat.data)
         
-        return(b)
+
     
     
     def calcH(self, dt):
@@ -927,17 +952,17 @@ class sedModel: # old finite difference approach
 
 #%% plotting functions
 
-def basicPlot(x, h, s, u, b, w, sed, basename, time):
+def basicPlot(glac, sed, basename, time):
     
     plt.ioff()
     
-    index = np.argsort(x.dat.data)
-    x = x.dat.data[index]*1e-3
-    h = h.dat.data[index]
-    s = s.dat.data[index]
-    u = icepack.depth_average(u).dat.data[index]
-    b = b.dat.data[index]
-    w = w.dat.data[index]*1e-3
+    index = np.argsort(glac.x.dat.data)
+    x = glac.x.dat.data[index]*1e-3
+    h = glac.h.dat.data[index]
+    s = glac.s.dat.data[index]
+    u = icepack.depth_average(glac.u).dat.data[index]
+    b = glac.b.dat.data[index]
+    w = glac.w.dat.data[index]*1e-3
     
     L = x[-1]
     
@@ -1022,7 +1047,7 @@ def basicPlot(x, h, s, u, b, w, sed, basename, time):
     
     
     # axes[2,1].plot(sed.x*1e-3, sed.hillslope, 'k', label='hillslope processes')
-    axes[2,1].plot(sed.x.dat.data*1e-3, sed.dHdt.dat.data, 'k', label='$\partial H/\partial t$')
+    axes[2,1].plot(sed.x.dat.data*1e-3, sed.dHdt.dat.data, 'k', label='$\partial H_s/\partial t$')
     axes[2,1].legend(loc='upper left')
     
     # # axes[2,1].plot(sed.x*1e-3, sed.dHdt)

@@ -18,7 +18,7 @@ import tqdm
 
 import func
 from func import schoof_approx_friction, side_drag, constants, params
-from func import sediment
+from func import sediment, glacier
 
 constant = constants()
 param = params()
@@ -29,37 +29,37 @@ import pickle
 #%% 
 files = sorted(glob.glob('./results/spinup/*h5'))
 
-
+glac = glacier()
 with firedrake.CheckpointFile(files[-1], "r") as checkpoint:
-    mesh = checkpoint.load_mesh(name="mesh")
-    x = checkpoint.load_function(mesh, name="position")
-    h = checkpoint.load_function(mesh, name="thickness")
-    s = checkpoint.load_function(mesh, name="surface")
-    u = checkpoint.load_function(mesh, name="velocity")
-    b = checkpoint.load_function(mesh, name="bed")
-    w = checkpoint.load_function(mesh, name="width")
-
+    glac.mesh = checkpoint.load_mesh(name="mesh")
+    glac.x = checkpoint.load_function(glac.mesh, name="position")
+    glac.h = checkpoint.load_function(glac.mesh, name="thickness")
+    glac.s = checkpoint.load_function(glac.mesh, name="surface")
+    glac.u = checkpoint.load_function(glac.mesh, name="velocity")
+    glac.b = checkpoint.load_function(glac.mesh, name="bed")
+    glac.w = checkpoint.load_function(glac.mesh, name="width")
+    
 # set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh
-Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
-V = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
+glac.Q = firedrake.FunctionSpace(glac.mesh, "CG", 2, vfamily="R", vdegree=0)
+glac.V = firedrake.FunctionSpace(glac.mesh, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
 
 # create scalar functions for the spatial coordinates
-x_sc, z_sc = firedrake.SpatialCoordinate(mesh)
-x = firedrake.interpolate(x_sc, Q)
-z = firedrake.interpolate(z_sc, Q)
+x_sc, z_sc = firedrake.SpatialCoordinate(glac.mesh)
+glac.x = firedrake.interpolate(x_sc, glac.Q)
+glac.z = firedrake.interpolate(z_sc, glac.Q)
 
 
 # find initial glacier length
-L = np.max(x.dat.data)
+L = np.max(glac.x.dat.data)
 
 # find tideLine; currently this will only work if the glacier is terminating in the ocean
-_, tideLine = func.bedrock(x, Q=Q) # 
+_, glac.tideLine = func.bedrock(glac.x, Q=glac.Q) # 
 
 # initialize sediment model to fill fjord at level equal to the base of the terminus
 # (also requires that terminus be in the water) 
 # sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
 # sed.H[sed.H<2] = 2
-sed = sediment(-b.dat.data[-1]-10) # initialize the sediment model
+sed = sediment(-glac.b.dat.data[-1]-10) # initialize the sediment model
 
 
 # set up hybrid model solver with custom friction function
@@ -87,58 +87,58 @@ time = np.linspace(0, num_timesteps*dt, num_timesteps+1, endpoint=True)
 #%%
 for step in tqdm.trange(num_timesteps):
     # solve for velocity
-    u = solver.diagnostic_solve(
-        velocity = u,
-        thickness = h,
-        surface = s,
+    glac.u = solver.diagnostic_solve(
+        velocity = glac.u,
+        thickness = glac.h,
+        surface = glac.s,
         fluidity = constant.A,
         friction = constant.C,
         U0 = constant.U0,
-        side_friction = side_drag(w)
+        side_friction = side_drag(glac.w)
     )
     
-    u_bar = icepack.interpolate(4/5*u, u.function_space()) # width-averaged velocity
+    glac.u_bar = icepack.interpolate(4/5*glac.u, glac.V) # width-averaged velocity
     
     # determine mass balance rate and adjusted mass balance profile
-    a, a_mod = func.massBalance(x, s, u_bar, h, w, param)
+    glac.massBalance()
     
     # solve for new thickness
-    h = solver.prognostic_solve(
+    glac.h = solver.prognostic_solve(
         dt,
-        thickness = h,
-        velocity = u_bar,
-        accumulation = a_mod)
+        thickness = glac.h,
+        velocity = glac.u_bar,
+        accumulation = glac.a_mod)
     
     # erode the bed
     # b = sed.sedTransportImplicit(x, h, a, b, u, Q, dt)
-    b = sed.transport(x, b, a, w, h, dt)
+    sed.transport(glac, dt)
     
     
     # determine surface elevation
-    s = icepack.compute_surface(thickness = h, bed = b)
+    glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.b)
     
     # find new terminus position
     # L_new = np.max([func.find_endpoint_massflux(L, x, a, u_bar, h, w, dt), tideLine])
-    L_new = np.max([func.find_endpoint_haf(L, h, s), tideLine])
+    L_new = np.max([func.find_endpoint_haf(L, glac.h, glac.s), glac.tideLine])
     
     # regrid, if necessary
-    if L_new > tideLine: # if tidewater glacier, always need to regrid
-        Q, V, h, u, b, s, w, mesh, x = func.regrid(param.n, x, L, L_new, h, u, sed) # regrid velocity and thickness
+    if L_new > glac.tideLine: # if tidewater glacier, always need to regrid
+        glac.regrid(param.n, L, L_new, sed) # regrid velocity and thickness
                 
-    elif (L_new==tideLine) and (L_new<L): # just became land-terminating, need to regrid
-        Q, V, h, u, b, s, w, mesh, x = func.regrid(param.n, x, L, L_new, h, u, sed) # regrid velocity and thickness
-        h.interpolate(max_value(h, constant.hmin))
+    elif (L_new==glac.tideLine) and (L_new<L): # just became land-terminating, need to regrid
+        glac.regrid(param.n, L, L_new, sed) # regrid velocity and thickness
+        glac.h.interpolate(max_value(glac.h, constant.hmin))
         
     else: # land-terminating and was previously land-terminating, only need to ensure minimum thickness
-        h.interpolate(max_value(h, constant.hmin))
-        s = icepack.compute_surface(thickness = h, bed = b)
+        glac.h.interpolate(max_value(glac.h, constant.hmin))
+        glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.b)
         
     L = L_new # reset the length
     #length[step+1] = L
 
     print(' L: ' + '{:.2f}'.format(L*1e-3) + ' km')
 
-    zb = firedrake.interpolate(s - h, Q) # glacier bottom; not the same as the bedrock function if floating
+    zb = firedrake.interpolate(glac.s - glac.h, glac.Q) # glacier bottom; not the same as the bedrock function if floating
 
     # update model with new friction coefficients
     model = icepack.models.HybridModel(friction = schoof_approx_friction)
@@ -153,16 +153,25 @@ for step in tqdm.trange(num_timesteps):
     basename = './results/mature/mature_' + "{:04}".format(step)
     # filename = './results/mature/mature_' + "{:03}".format(step) + '.h5'
     with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
-        checkpoint.save_mesh(mesh)
-        checkpoint.save_function(x, name="position")
-        checkpoint.save_function(h, name="thickness")
-        checkpoint.save_function(s, name="surface")
-        checkpoint.save_function(u, name="velocity")
-        checkpoint.save_function(b, name="bed")
-        checkpoint.save_function(w, name="width")
+        checkpoint.save_mesh(glac.mesh)
+        checkpoint.save_function(glac.x, name="position")
+        checkpoint.save_function(glac.h, name="thickness")
+        checkpoint.save_function(glac.s, name="surface")
+        checkpoint.save_function(glac.u, name="velocity")
+        checkpoint.save_function(glac.b, name="bed")
+        checkpoint.save_function(glac.w, name="width")
+    
+    basenameSed = './results/mature/matureSed_' + "{:04}".format(step)
+    with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
+        checkpoint.save_mesh(sed.mesh)
+        checkpoint.save_function(sed.x, name="position")
+        checkpoint.save_function(sed.H, name="thickness")
+        checkpoint.save_function(sed.bedrock, name="bedrock")
+        checkpoint.save_function(sed.erosionRate, name="erosionRate")
+        checkpoint.save_function(sed.depositionRate, name="depositionRate")
+        checkpoint.save_function(sed.dHdt, name="dHdt")
+        checkpoint.save_function(sed.Qw, name="runoff")
+        checkpoint.save_function(sed.Qs, name="sedimentFlux")
         
-    # with open(basename + '_sed.pickle', 'wb') as file:
-    #     pickle.dump(sed, file)
-    #     file.close()    
 
-    func.basicPlot(x, h, s, u, b, w, sed, basename, time[step])
+    func.basicPlot(glac, sed, basename, time[step])
