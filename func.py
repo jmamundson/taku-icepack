@@ -83,15 +83,8 @@ class paramsSed:
         self.h_eff = 0.1 # effective water thickness [m]
         self.c = 2e-12 # Brinkerhoff used 2e-12
         self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
-        self.k = 10000 # sediment diffusivity; Brinkerhoff used 5000
+        self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
         
-        # Delaney model
-        self.beta = 30/180*np.pi
-        self.s = 2*(self.beta-np.sin(self.beta))**2 / (self.beta/2+np.sin(self.beta/2))**4
-        self.fr = 0.15 
-        self.Dm50 = 0.04
-        self.rho_sed = 1500 / (365.25*86400)**2 * 1.0e-6
-        self.sedL = 100
 
 paramSed = paramsSed()
 
@@ -118,11 +111,11 @@ def bedrock(x, **kwargs):
         b = firedrake.interpolate(b, Q)
     
         # determine where the bedrock intersects sea level
-        bedInterpolator = interp1d(b.dat.data, x.dat.data, kind='cubic')
+        bedInterpolator = interp1d(b.dat.data, x.dat.data, kind='linear')
     
     else:
         b = 2500*np.exp(-(x+5000)**2 / (2*15000**2)) - 400
-        bedInterpolator = interp1d(b, x, kind='cubic')
+        bedInterpolator = interp1d(b, x, kind='linear')
     
     tideLine = bedInterpolator(0) 
     
@@ -428,11 +421,11 @@ def adjust_function(func_src, x, L, L_new, funcspace_dest):
         u_ = icepack.depth_average(func_src).dat.data
         u_ = u_[index]
         
-        data_interpolator = interp1d(x, u_, kind='cubic', fill_value='extrapolate')
+        data_interpolator = interp1d(x, u_, kind='linear', fill_value='extrapolate')
         data_new = data_interpolator(x_new)
         
     else:
-        data_interpolator = interp1d(x, data[index], kind='cubic', fill_value='extrapolate')
+        data_interpolator = interp1d(x, data[index], kind='linear', fill_value='extrapolate')
         data_new = data_interpolator(x_new)
     
     
@@ -582,24 +575,20 @@ class sediment:
         
         self.bedrock, _ = bedrock(self.x, Q=self.Q)        
     
-        Qw =  calcQw(a, w, h) # runoff on the glacier domain
+        self.calcQw(a, w, h) # runoff on the glacier domain
         
-        # determine runoff on sediment domain
-        # for erosion purposes, no runoff beyond the end of the glacier
-        # however, for deposition we need to account for transport by fjord 
-        # circulation, which is included later
-        self.Qw = icepack.interpolate(0*self.bedrock, self.Q)
-        self.Qw.dat.data[:len(Qw.dat.data)] = Qw.dat.data
+        
         
         # compute erosion rate
         bed = icepack.interpolate(self.bedrock+self.H, self.Q)
         alpha = bed.dx(0) # bed slope
 
         self.h_eff = icepack.interpolate(paramSed.h_eff * exp(10*alpha), self.Q) # !!! might need some more thought !!!
-
+        
         self.delta_s = icepack.interpolate(1-exp(-self.H/10), self.Q)
         
         self.erosionRate = icepack.interpolate(paramSed.c * self.Qw**2/self.h_eff**3 * self.delta_s, self.Q)
+        
         
         # compute sediment flux; don't want discharge to go to zero at the terminus, so first redefine Qw
         self.Qw = icepack.interpolate(conditional(self.x>np.max(x_), 5*np.max(self.Qw.dat.data), self.Qw), self.Q)
@@ -622,7 +611,7 @@ class sediment:
         xBed = xBed[index]
         bed = bed[index]
         
-        bed_interpolator = interp1d(xBed, bed, kind='quadratic')
+        bed_interpolator = interp1d(xBed, bed, kind='linear')
         
         b.dat.data[:] = bed_interpolator(x.dat.data)
         
@@ -654,81 +643,88 @@ class sediment:
         '''
         
         # nonlinear?
-        Qs = firedrake.Function(self.Q)
-        Qs.assign(self.Qw)
-        
-        v = firedrake.TestFunction(self.Q)
-        
-        #LHS = ( self.Qw*Qs.dx(0) + paramSed.w*Qs - self.Qw*self.erosionRate) * v *dx
-        LHS = (-Qs*v.dx(0) + Qs*paramSed.w/(self.Qw+1e-10)*v - self.erosionRate*v ) * dx
-        
-        bc = firedrake.DirichletBC(self.Q, 0, 1)
-        firedrake.solve(LHS == 0, Qs, bcs=[bc])
-        
-        self.Qs = Qs
-        
-        
-        
-        
-        # linear?
-        # u = firedrake.TrialFunction(self.Q) # unknown that we wish to determine
+        # Qs = firedrake.Function(self.Q)
+        # Qs.assign(self.Qw)
         
         # v = firedrake.TestFunction(self.Q)
-
-        # # left and right hand sides of variational form
-        # LHS = ( self.Qw * u.dx(0) + paramSed.w * u ) * v * dx
-        # RHS = ( self.Qw * self.erosionRate ) * v * dx
         
-        # Qs = firedrake.Function(self.Q) # create empty function to hold the solution
+        # LHS = (-Qs*v.dx(0) + Qs*paramSed.w/self.Qw*v - self.erosionRate*v ) * dx
         
         # bc = firedrake.DirichletBC(self.Q, 0, 1)
-        
-        # firedrake.solve(LHS == RHS, Qs, bcs=[bc])
+        # firedrake.solve(LHS == 0, Qs, bcs=[bc])
         
         # self.Qs = Qs
         
+        
+        # linear?
+        u = firedrake.TrialFunction(self.Q) # unknown that we wish to determine
+        
+        v = firedrake.TestFunction(self.Q)
+
+        # left and right hand sides of variational form
+        LHS = u * ( -v.dx(0) + paramSed.w/self.Qw*v ) * dx
+        # testing some artificial diffusion
+        artificialDiffusionCoeff = firedrake.Constant(0)
+        LHS = u * ( -v.dx(0) + paramSed.w/self.Qw*v) * dx + artificialDiffusionCoeff*u.dx(0)*v.dx(0) * dx
+        RHS = (self.erosionRate) * v * dx
+        
+        Qs = firedrake.Function(self.Q) # create empty function to hold the solution
+        
+        bc = firedrake.DirichletBC(self.Q, (0), 2)
+        
+        firedrake.solve(LHS == RHS, Qs, bcs=[bc])
+        
+        self.Qs = Qs
+        
     
     
         
-def calcQw(a, w, h):
-    '''
-    Calculates width-averaged runoff assuming 
-    Q_w = 1/w * \int (a_max - a) * w * dx.
-
-    Parameters
-    ----------
-    a : mass balance rate [m a^{-1}]
-    w : glacier width [m]
-    h : glacier thickness [m]; used to determine glacier mask, which is really 
-        only relevant for land-terminating glaciers since then the grid is 
-        fixed and there is a minimum ice thickness in front of the glacier
-
-    Returns
-    -------
-    runoff : width-averaged runoff [m^2 a^{-1}]
-
-    '''    
+    def calcQw(self, a, w, h):
+        '''
+        Calculates width-averaged runoff assuming 
+        Q_w = 1/w * \int (a_max - a) * w * dx.
     
-    Q = a.function_space()
-    u = firedrake.TrialFunction(Q) # unknown that we wish to determine
-
-    v = firedrake.TestFunction(Q)
-
-    iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
-
-    # left and right hand sides of variational form
-    LHS = u.dx(0) * v * dx
-    RHS = ( (param.a_max-a)  * iceMask ) * w * v * dx # the thing that we are integrating
-
-    Qw = firedrake.Function(Q) # create empty function to hold the solution
-
-    bc = firedrake.DirichletBC(Q, (1e-10), 1) # runoff equals 0 at the divide
-
-    firedrake.solve(LHS == RHS, Qw, bcs=[bc]) # runoff in m^3 a^{-1}
+        Parameters
+        ----------
+        a : mass balance rate [m a^{-1}]
+        w : glacier width [m]
+        h : glacier thickness [m]; used to determine glacier mask, which is really 
+            only relevant for land-terminating glaciers since then the grid is 
+            fixed and there is a minimum ice thickness in front of the glacier
     
-    Qw = icepack.interpolate(Qw/w, Q) # width-averaged runoff
+        Returns
+        -------
+        runoff : width-averaged runoff [m^2 a^{-1}]
     
-    return(Qw)        
+        '''    
+        
+        Q = a.function_space()
+        u = firedrake.TrialFunction(Q) # unknown that we wish to determine
+    
+        v = firedrake.TestFunction(Q)
+    
+        iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
+    
+        # left and right hand sides of variational form
+        LHS = u.dx(0) * v * dx
+        RHS = ( (param.a_max-a)  * iceMask ) * w * v * dx # the thing that we are integrating
+    
+        Qw = firedrake.Function(Q) # create empty function to hold the solution
+    
+        bc = firedrake.DirichletBC(Q, (1e-1), 1) # runoff equals 0 at the divide
+    
+        firedrake.solve(LHS == RHS, Qw, bcs=[bc]) # runoff in m^3 a^{-1}
+        
+        Qw = icepack.interpolate(Qw/w, Q) # width-averaged runoff on the glacier grid
+        
+        # determine runoff on sediment domain
+        # for erosion purposes, no runoff beyond the end of the glacier
+        # however, for deposition we need to account for transport by fjord 
+        # circulation, which is included later
+        self.Qw = icepack.interpolate(0*self.bedrock, self.Q)
+        self.Qw.dat.data[:len(Qw.dat.data)] = Qw.dat.data
+        
+        return(Qw)        
         
         
         
@@ -750,7 +746,7 @@ def calcQw(a, w, h):
         
         
         
-class sedModel:
+class sedModel: # old finite difference approach
 
     def __init__(self, L, sedDepth):
         '''
@@ -991,9 +987,7 @@ def basicPlot(x, h, s, u, b, w, sed, basename, time):
     plt.tight_layout()
     
 
-    # sed.w = width(sed.x)
-    # sed.sealevel = np.zeros(len(sed.x))
-    # sed.sealevel[sed.zBedrock>0] = sed.zBedrock[sed.zBedrock>0]
+    
     sealevel = icepack.interpolate(0*sed.bedrock, sed.Q)
     sealevel = icepack.interpolate(conditional(sed.bedrock>0, sed.bedrock, 0), sed.Q)
     
@@ -1004,13 +998,13 @@ def basicPlot(x, h, s, u, b, w, sed, basename, time):
     axes[0,0].fill_between(x, s, b, color='w', linewidth=1)
     axes[0,0].plot(sed.x.dat.data*1e-3, sed.bedrock.dat.data, 'k')
     
+    sed.w = width(sed.x, Q=sed.Q)
     
-    
-    # axes[1,0].plot(np.array([L,L]), np.array([w[-1]/2,-w[-1]/2]), 'k')
-    # axes[1,0].plot(sed.x*1e-3, sed.w/2*1e-3, 'k')
-    # axes[1,0].plot(sed.x*1e-3, -sed.w/2*1e-3, 'k')
-    # axes[1,0].fill_between(sed.x*1e-3, sed.w/2*1e-3, -sed.w/2*1e-3, color='cornflowerblue')
-    # axes[1,0].fill_between(x, w/2, -w/2, color='white')
+    axes[1,0].plot(np.array([L,L]), np.array([w[-1]/2,-w[-1]/2]), 'k')
+    axes[1,0].plot(sed.x.dat.data*1e-3, sed.w.dat.data/2*1e-3, 'k')
+    axes[1,0].plot(sed.x.dat.data*1e-3, -sed.w.dat.data/2*1e-3, 'k')
+    axes[1,0].fill_between(sed.x.dat.data*1e-3, sed.w.dat.data/2*1e-3, -sed.w.dat.data/2*1e-3, color='cornflowerblue')
+    axes[1,0].fill_between(x, w/2, -w/2, color='white')
     
     
     axes[2,0].plot(x, u, 'k')
@@ -1018,18 +1012,18 @@ def basicPlot(x, h, s, u, b, w, sed, basename, time):
     axes[3,0].axis('off')
     
     axes[0,1].plot(sed.x.dat.data*1e-3, sed.Qw.dat.data*1e-6, 'k', label='runoff')
-    axes[0,1].plot(sed.x.dat.data*1e-3, sed.Qs.dat.data*1e-6, 'k:', label='sediment flux')
-    axes[0,1].legend()
+    axes[0,1].plot(sed.x.dat.data*1e-3, sed.Qs.dat.data*1e-5, 'k:', label=r'sediment flux ($\times 10$)')
+    axes[0,1].legend(loc='upper left')
     
     
     axes[1,1].plot(sed.x.dat.data*1e-3, sed.erosionRate.dat.data, 'k', label='erosion rate')
     axes[1,1].plot(sed.x.dat.data*1e-3, sed.depositionRate.dat.data, 'k--', label='deposition rate')
-    axes[1,1].legend()
+    axes[1,1].legend(loc='upper left')
     
     
     # axes[2,1].plot(sed.x*1e-3, sed.hillslope, 'k', label='hillslope processes')
-    axes[2,1].plot(sed.x.dat.data*1e-3, sed.dHdt.dat.data, 'k:', label='deposition-erosion')
-    axes[2,1].legend()
+    axes[2,1].plot(sed.x.dat.data*1e-3, sed.dHdt.dat.data, 'k', label='$\partial H/\partial t$')
+    axes[2,1].legend(loc='upper left')
     
     # # axes[2,1].plot(sed.x*1e-3, sed.dHdt)
     axes[3,1].plot(sed.x.dat.data*1e-3, sed.H.dat.data, 'k')

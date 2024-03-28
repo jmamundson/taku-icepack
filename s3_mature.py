@@ -83,7 +83,6 @@ length[0] = L
 
 time = np.linspace(0, num_timesteps*dt, num_timesteps+1, endpoint=True)
 
-num_timesteps = 100
 
 #%%
 for step in tqdm.trange(num_timesteps):
