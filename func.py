@@ -574,7 +574,7 @@ class sediment:
         LSed = nSed*deltaX # length of sediment domain
         
         index = np.argsort(self.x.dat.data)
-        sedH_interpolator = interp1d(self.x.dat.data[index], self.H.dat.data[index], kind='quadratic', fill_value='extrapolate')
+        sedH_interpolator = interp1d(self.x.dat.data[index], self.H.dat.data[index], kind='linear', fill_value='extrapolate')
 
         
         # new mesh and function space
@@ -616,7 +616,7 @@ class sediment:
         
         
         # compute sediment flux; don't want discharge to go to zero at the terminus, so first redefine Qw
-        self.Qw = icepack.interpolate(conditional(self.x>np.max(x_), 5*np.max(self.Qw.dat.data), self.Qw), self.Q)
+        self.Qw = icepack.interpolate(conditional(self.x>np.max(x_), 1*np.max(self.Qw.dat.data), self.Qw), self.Q)
         
         self.calcQs()
         
@@ -657,8 +657,8 @@ class sediment:
         
         firedrake.solve(LHS == 0, H)
         
-        self.H = H
-        
+        # self.H = H
+        self.H = icepack.interpolate(conditional(H<0, 0, H), self.Q)
         
         
     def calcQs(self):
@@ -682,24 +682,70 @@ class sediment:
         
         
         # linear?
-        u = firedrake.TrialFunction(self.Q) # unknown that we wish to determine
         
-        v = firedrake.TestFunction(self.Q)
+        index = np.argsort(self.x.dat.data)
+        x = self.x.dat.data[index][::2]
+        H = self.H.dat.data[index][::2]
+        erosionRate = self.erosionRate.dat.data[index][::2]
+        Qw = self.Qw.dat.data[index][::2]
+        
+        # nonzero thickness at
+        index = H.nonzero()[0]
+        ind0 = index[0]
+        x0 = x[ind0] # first point of nonzero thickness
+        xL = np.max(self.x.dat.data)
+        
+        H_xarray = xarray.DataArray(H[index], [x[index]], 'x')
+        erosionRate_xarray = xarray.DataArray(erosionRate[index], [x[index]], 'x')
+        Qw_xarray = xarray.DataArray(Qw[index], [x[index]], 'x')
+        
+        deltaX = x[1] # because quadratic functions
+        
+        n = int((xL-x0)/deltaX)
+        
+        mesh1d = firedrake.IntervalMesh(n, x0, right=xL)
+        mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
+
+        # set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh
+        Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
+        
+        x_sc, z_sc = firedrake.SpatialCoordinate(mesh)
+        x = firedrake.interpolate(x_sc, Q)
+        z = firedrake.interpolate(z_sc, Q)
+
+        H = icepack.interpolate(H_xarray, Q)
+        erosionRate = icepack.interpolate(erosionRate_xarray, Q)
+        Qw = icepack.interpolate(Qw_xarray, Q)
+        
+        H.dat.data[-1] = H.dat.data[-2]
+        erosionRate.dat.data[-1] = erosionRate.dat.data[-2]
+        Qw.dat.data[-1] = Qw.dat.data[-2]
+        
+        u = firedrake.TrialFunction(Q) # unknown that we wish to determine
+        
+        v = firedrake.TestFunction(Q)
 
         # left and right hand sides of variational form
-        LHS = u * ( -v.dx(0) + paramSed.w/self.Qw*v ) * dx
+        LHS = u * ( -v.dx(0) + paramSed.w/Qw*v ) * dx
         # testing some artificial diffusion
         artificialDiffusionCoeff = firedrake.Constant(0)
-        LHS = u * ( -v.dx(0) + paramSed.w/self.Qw*v) * dx + artificialDiffusionCoeff*u.dx(0)*v.dx(0) * dx
-        RHS = (self.erosionRate) * v * dx
+        LHS = u * ( -v.dx(0) + paramSed.w/Qw*v) * dx + artificialDiffusionCoeff*u.dx(0)*v.dx(0) * dx
+        RHS = (erosionRate) * v * dx
         
-        Qs = firedrake.Function(self.Q) # create empty function to hold the solution
+        Qs = firedrake.Function(Q) # create empty function to hold the solution
         
-        bc = firedrake.DirichletBC(self.Q, (0), 2)
+        bc = firedrake.DirichletBC(Q, (0), 1)
         
         firedrake.solve(LHS == RHS, Qs, bcs=[bc])
         
-        self.Qs = Qs
+        #index = np.argsort(x.dat.data)
+        #Qs_xarray = xarray.DataArray(Qs.dat.data[index], [x.dat.data[index]], 'x')
+        
+        Qs_index = np.argsort(x.dat.data)
+        
+        self.Qs = icepack.interpolate(0*self.Qw, self.Q)
+        self.Qs.dat.data[2*index[0]:] = Qs.dat.data[Qs_index] # clean up indexing, etc!!!!
+        #self.Qs = icepack.interpolate(conditional(self.x>=np.min(x.dat.data), Qs, 0), self.Q)
         
     
     
