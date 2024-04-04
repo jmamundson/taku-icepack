@@ -73,7 +73,7 @@ opts = {
 solver = icepack.solvers.FlowSolver(model, **opts)
 
 
-years = 10
+years = 100
 dt = param.dt
 num_timesteps = int(years/dt)
 
