@@ -114,8 +114,8 @@ for step in tqdm.trange(num_timesteps):
     glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.b)
     
     # find new terminus position
-    # L_new = np.max([func.find_endpoint_massflux(glac, L, dt), glac.tideLine])
-    L_new = np.max([func.find_endpoint_haf(L, glac.h, glac.s), glac.tideLine])
+    L_new = np.max([func.find_endpoint_massflux(glac, L, dt), glac.tideLine])
+    # L_new = np.max([func.find_endpoint_haf(L, glac.h, glac.s), glac.tideLine])
     
     # regrid, if necessary
     if L_new > glac.tideLine: # if tidewater glacier, always need to regrid

@@ -57,7 +57,7 @@ class params:
     '''
     
     def __init__(self):
-        self.n = 200 # number of grid points
+        self.n = 100 # number of grid points
         self.dt = 0.1 # time step size [a]
         self.L = 30e3 # initial domain length [m]
         self.Lsed = 80e3 # length of sediment model [m]
@@ -75,10 +75,9 @@ class paramsSed:
     
     def __init__(self):
         # Brinkerhoff model
-        factor = 1
         self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 2e-12*factor # Brinkerhoff used 2e-12
-        self.w = 500*factor # settling velocity [m a^{-1}]; Brinkerhoff used 500
+        self.c = 2e-12 # Brinkerhoff used 2e-12
+        self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
         
 
@@ -218,23 +217,28 @@ def find_endpoint_massflux(glac, L, dt):
     L_new : new glacier length [m]
     '''
     
-    alpha = 1.15 # frontal ablation parameter
+    alpha = 1.13 # frontal ablation parameter
     
-    Qb = firedrake.assemble(glac.a * glac.w * dx) # balance flux [m^3 a^{-1}]
+    # Qb = firedrake.assemble(glac.a * glac.w * dx) # balance flux [m^3 a^{-1}]
     
     index = np.argsort(glac.x.dat.data)
     
-    Wt = glac.w.dat.data[index[-1]] # terminus width [m]
-    Ht = glac.h.dat.data[index[-1]] # terminus thickness
+    # Wt = glac.w.dat.data[index[-1]] # terminus width [m]
+    # Ht = glac.h.dat.data[index[-1]] # terminus thickness
     
-    Ub = Qb / (Wt*Ht) # balance velocity [m a^{-1}]
+    # Ub = Qb / (Wt*Ht) # balance velocity [m a^{-1}]
     
-    
+    glac.balanceFlux()
+    Ub = glac.ub.dat.data[index[-1]]
     Ut = icepack.depth_average(glac.u_bar).dat.data[index[-1]] # centerline terminus velocity [m a^{-1}]
+    
     
     dLdt = (alpha-1)*(Ub-Ut) # rate of length change [m a^{-1}]
     
     L_new = L + dLdt*dt
+    
+    dLdt = (L_new-L)/param.dt
+    print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
     
     return(L_new)
 
@@ -604,7 +608,9 @@ class sediment:
         
         index = np.argsort(self.x.dat.data)
         sedH_interpolator = interp1d(self.x.dat.data[index], self.H.dat.data[index], kind='linear', fill_value='extrapolate')
-
+        erosionRate_interpolator = interp1d(self.x.dat.data[index], self.erosionRate.dat.data[index], kind='linear', fill_value='extrapolate')
+        depositionRate_interpolator = interp1d(self.x.dat.data[index], self.depositionRate.dat.data[index], kind='linear', fill_value='extrapolate')
+        
         
         # new mesh and function space
         self.mesh1d = firedrake.IntervalMesh(nSed, LSed)
@@ -617,20 +623,30 @@ class sediment:
         self.x = firedrake.interpolate(x_sc, self.Q)
         self.z = firedrake.interpolate(z_sc, self.Q)
 
-        # interpolate sediment thickness onto new mesh;
+        # interpolate sediment thickness, erosion rate, and deposition rate 
+        # onto new mesh; need old values for Crank-Nicolson
         # assumes that sediment extends far enough from glacier that bedrock 
         # and sediment are flat at end of domain
         index = np.argsort(self.x.dat.data)
         x_tmp = self.x.dat.data[index]
+        
         H_tmp = sedH_interpolator(x_tmp)
         H_xarray = xarray.DataArray(H_tmp, [x_tmp], 'x')
-        
         self.H = icepack.interpolate(H_xarray, self.Q)
+        
+        erosionRate_tmp = erosionRate_interpolator(x_tmp)
+        erosionRate_xarray = xarray.DataArray(erosionRate_tmp, [x_tmp], 'x')
+        self._erosionRate = icepack.interpolate(erosionRate_xarray, self.Q)
+        
+        depositionRate_tmp = depositionRate_interpolator(x_tmp)
+        depositionRate_xarray = xarray.DataArray(depositionRate_tmp, [x_tmp], 'x')
+        self._depositionRate = icepack.interpolate(depositionRate_xarray, self.Q)
         
         self.bedrock, _ = bedrock(self.x, Q=self.Q)        
     
-        self.calcQw(glac.a, glac.w, glac.h) # runoff on the glacier domain
-        
+    
+    
+        self.calcQw(glac.a, glac.w, glac.h) 
         
         
         # compute erosion rate
@@ -702,7 +718,12 @@ class sediment:
         H_.assign(self.H)
         H.assign(self.H)
         
-        LHS = ((H-H_)/dt*v + paramSed.k*(H.dx(0)+self.bedrock.dx(0))*self.delta_s*v.dx(0) + (self.erosionRate - self.depositionRate)*v ) * dx
+        theta = 0.5 # 0.5 = Crank-Nicolson; 0 and 1 are explicit and implicit Euler
+        
+        LHS = ( (H-H_)/dt*v + 
+               paramSed.k*(H.dx(0)+self.bedrock.dx(0))*self.delta_s*v.dx(0) + 
+               theta*(self.erosionRate - self.depositionRate)*v + 
+               (1-theta)*(self._erosionRate - self._depositionRate)*v) * dx
         
         firedrake.solve(LHS == 0, H)
         
