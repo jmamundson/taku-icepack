@@ -57,7 +57,7 @@ class params:
     '''
     
     def __init__(self):
-        self.n = 100 # number of grid points
+        self.n = 200 # number of grid points
         self.dt = 0.1 # time step size [a]
         self.L = 30e3 # initial domain length [m]
         self.Lsed = 80e3 # length of sediment model [m]
@@ -278,6 +278,41 @@ def find_endpoint_haf(L, h, s):
     return(L_new)
 
 
+def find_endpoint_modified_haf(glac):
+    '''
+    Finds new glacier length using the height above flotation calving criteria.
+    For some reason this only works if desired height above flotation is more 
+    than about 5 m.
+
+    Parameters
+    ----------
+    L : domain length [m]
+    h, s : firedrake functions for the thickness and surface elevation
+
+    Returns
+    -------
+    L_new : new domain length [m]
+
+    '''
+    
+    q = 0.15
+    f = icepack.interpolate(glac.h + rho_water/rho_ice*(1+q)*glac.b, glac.Q) # function to find zero of
+    
+    index = np.argsort(glac.x.dat.data)
+    x = glac.x.dat.data[index]
+    f = f.dat.data[index]
+    
+    L = x[-1]
+    
+    f_interpolator = interp1d(f, x, kind='linear', fill_value='extrapolate')
+    
+    L_new = f_interpolator(0)
+    
+   
+    dLdt = (L_new-L)/param.dt
+    print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
+
+    return(L_new)
 
 
 

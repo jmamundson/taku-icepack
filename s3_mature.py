@@ -48,7 +48,7 @@ _, glac.tideLine = func.bedrock(glac.x, Q=glac.Q) #
 # (also requires that terminus be in the water) 
 # sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
 # sed.H[sed.H<2] = 2
-sed = sediment(-glac.b.dat.data[-1]-10) # initialize the sediment model
+sed = sediment(-glac.b.dat.data[-1]-20) # initialize the sediment model
 
 
 # set up hybrid model solver with custom friction function
