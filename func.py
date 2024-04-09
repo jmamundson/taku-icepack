@@ -1,19 +1,14 @@
-# sediment model not working with hillslope diffusion if grid size too small?
-# hillslope diffusion not allowing for erosion?
-# need to increase water flux?
 # model behaves better with height above flotation criterion (why?) or just use floatation criteria for initial spin up?
 # if time step is too large get negative sediment thickness
 # main issues with sediment model:
 #   1. kink in bed slope at bedrock-sediment transition
 #   2. too much deposition at the terminus
 #   3. "oscillating" behavior if grid size too small    
-# someway to reduce erosion if too much curvature? maybe make hs larger?
 # make sure no sediment is deposited up stream
 # cite Creyts et al (2013): Evolution of subglacial overdeepenings in response to sediment redistribution and glaciohydraulic supercooling
 # also Delaney paper on sugset_2d; discuss supply limited vs transport limited regimes
 # linear interpolation for height above flotation
-# to do: create glacier class
-# need to be careful with interpolators
+# issue with eroding where there isn't sediment (as result of backward Euler?)
 
 import numpy as np
 
@@ -62,14 +57,14 @@ class params:
     '''
     
     def __init__(self):
-        self.n = 100 # number of grid points
-        self.dt = 0.05 # time step size [a]
-        self.L = 40e3 # initial domain length [m]
+        self.n = 200 # number of grid points
+        self.dt = 0.1 # time step size [a]
+        self.L = 30e3 # initial domain length [m]
         self.Lsed = 80e3 # length of sediment model [m]
         self.sedDepth = 50 # depth to sediment, from sea level, prior to advance scenario [m]
-        self.a_max = 4 # maximum mass balance rate [m a^{-1}]
-        self.a_gradient = 0.01 # mass balance gradient
-        self.ELA = 1000 # equilbrium line altitude [m]
+        self.a_max = 5 # maximum mass balance rate [m a^{-1}]
+        self.a_gradient = 0.012 # mass balance gradient
+        self.ELA = 500 # equilbrium line altitude [m]
 
 param = params()
 
@@ -80,9 +75,10 @@ class paramsSed:
     
     def __init__(self):
         # Brinkerhoff model
+        factor = 1
         self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 2e-12 # Brinkerhoff used 2e-12
-        self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
+        self.c = 2e-12*factor # Brinkerhoff used 2e-12
+        self.w = 500*factor # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
         
 
@@ -140,12 +136,13 @@ def width(x, **kwargs):
     k = 5 # smoothing parameter
     x_step = 10e3 # location of step [m]
     w_fjord = 2e3 # fjord width [m]
-    w_max = 10e3 - w_fjord # maximum valley width [m]
+    w_max = 12e3 - w_fjord # maximum valley width [m]
     
     if "Q" in kwargs: # create firedrake function
         Q = kwargs["Q"]
         # using a logistic function, which makes the fjord walls roughly parallel
         w_array = w_max * (1 - 1 / (1+exp(-k*(x-x_step)/x_step))) + w_fjord
+        
         
         w = firedrake.interpolate(w_array, Q)
     
@@ -204,7 +201,7 @@ def initial_velocity(x, V):
 
 
 #%% functions for re-meshing the model
-def find_endpoint_massflux(L, x, a, u, h, w, dt):
+def find_endpoint_massflux(glac, L, dt):
     '''
     Finds the new glacier length using the mass-flux calving parameterization
     of Amundson (2016) and Amundson and Carroll (2018).
@@ -223,23 +220,24 @@ def find_endpoint_massflux(L, x, a, u, h, w, dt):
     
     alpha = 1.15 # frontal ablation parameter
     
-    index = np.argsort(x.dat.data)
-    xGlacier = x.dat.data[index]
-    balanceRate = a.dat.data[index]
-    width = w.dat.data[index]
+    Qb = firedrake.assemble(glac.a * glac.w * dx) # balance flux [m^3 a^{-1}]
     
-    hGlacier = h.dat.data[index]
-    uGlacier = icepack.depth_average(u).dat.data[index]
-    Ut = uGlacier[-1] # terminus velocity [m a^{-1}]
+    index = np.argsort(glac.x.dat.data)
     
-    Qb = np.trapz(balanceRate*width, dx=xGlacier[1]) # terminus balance flux [m^3 a^{-1}]
-    Ub = Qb/(hGlacier[-1]*width[-1]) # terminus balance velocity [m a^{-1}]
+    Wt = glac.w.dat.data[index[-1]] # terminus width [m]
+    Ht = glac.h.dat.data[index[-1]] # terminus thickness
     
-    dLdt = (alpha-1)*(Ub-Ut)
+    Ub = Qb / (Wt*Ht) # balance velocity [m a^{-1}]
+    
+    
+    Ut = icepack.depth_average(glac.u_bar).dat.data[index[-1]] # centerline terminus velocity [m a^{-1}]
+    
+    dLdt = (alpha-1)*(Ub-Ut) # rate of length change [m a^{-1}]
     
     L_new = L + dLdt*dt
     
-    return L_new
+    return(L_new)
+
 
 
 def find_endpoint_haf(L, h, s):
@@ -270,8 +268,10 @@ def find_endpoint_haf(L, h, s):
     
     haf_desired = 10 # desired height above flotation at the terminus
     L_new = haf_interpolator(haf_desired) # new domain length
+    dLdt = (L_new-L)/param.dt
+    print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
 
-    return L_new
+    return(L_new)
 
 
 
@@ -284,12 +284,26 @@ def schoof_approx_friction(**kwargs):
     s = kwargs['surface']
     C = kwargs['friction']
     U0 = kwargs['U0']
+    # x = kwargs['x']
+    # b = kwargs['b']
     
     U = sqrt(inner(u,u))
     tau_0 = firedrake.interpolate(
         C*( U0**(1/weertman+1) + U**(1/weertman+1) )**(1/(weertman+1)), u.function_space()
     )
     
+    
+    # L = np.max(x.dat.data)
+    # b0 = np.max(b.dat.data)
+    # phreaticSurface = b/L*(L-x)
+    
+    # test = icepack.interpolate(rho_water * g * glac.x/L*(glac.h-glac.s), glac.Q)
+    # test2 = icepack.interpolate(rho_water * g * firedrake.max_value(0, glac.h - glac.s), glac.Q)
+    # fig, axes = plt.subplots(1,1)
+    # firedrake.plot(icepack.depth_average(test), axes=axes)
+    # firedrake.plot(icepack.depth_average(test2), axes=axes)
+    
+    #p_water = rho_ice * g * x/L*(h-s) # may be a problem if floating!
     # Update pressures
     p_water = rho_water * g * firedrake.max_value(0, h - s) # assuming phreatic surface at sea level
     p_ice = rho_ice * g * h
@@ -306,8 +320,6 @@ def side_drag(w):
     Calculate the drag coefficient for side drag, for the equation:
     1/W*(4/(A*W))^{1/3} * |u|^{-2/3}*u
     
-    Currently assumes that the width is constant. Later may adjust this to pass 
-    in a width function.
     
     Parameters
     ----------
@@ -319,7 +331,7 @@ def side_drag(w):
     
     '''
     
-    Cs = firedrake.interpolate( 1/w * (4/(constant.A*w))**(1/3), w.function_space())
+    Cs = firedrake.interpolate( 2/w * (4/(constant.A*w))**(1/3), w.function_space())
 
     return Cs
 
@@ -342,11 +354,12 @@ class glacier:
         self.z = firedrake.interpolate(z_sc, self.Q)
 
         # create initial geometry
-        self.b, self.tideLine = bedrock(self.x, Q=self.Q) 
+        self.bed, self.tideLine = bedrock(self.x, Q=self.Q) # bedrock + sediment
         self.h = initial_thickness(self.x, self.Q)                  
-        self.s = icepack.compute_surface(thickness = self.h, bed = self.b) 
+        self.s = icepack.compute_surface(thickness = self.h, bed = self.bed) 
         self.u = initial_velocity(self.x, self.V)
         self.w = width(self.x, Q=self.Q)
+        self.b = icepack.interpolate(self.s-self.h, self.Q) # bottom of glacier; may or may not be floating
     
     def regrid(self, n, L, L_new, sed):
         '''
@@ -388,7 +401,7 @@ class glacier:
         # zBed_interpolator = interp1d(sed.x, sed.H+sed.zBedrock, kind='linear') # create interpolator to put bed elevation into a firedrake function
         zBed_interpolator = interp1d(xSed, bedSed, kind='quadratic') # create interpolator to put bed elevation into a firedrake function
         zBed_xarray = xarray.DataArray(zBed_interpolator(self.x.dat.data), [self.x.dat.data], 'x')
-        self.b = icepack.interpolate(zBed_xarray, self.Q)
+        self.bed = icepack.interpolate(zBed_xarray, self.Q)
 
         # remesh thickness and velocity
         self.h =  self.__adjust_function(self.h, x_old, L, L_new, self.Q)
@@ -396,17 +409,18 @@ class glacier:
 
         # compute new surface based on thickness and bed; this determines whether
         # or not the ice is floating    
-        self.s = icepack.compute_surface(thickness = self.h, bed = self.b) 
+        self.s = icepack.compute_surface(thickness = self.h, bed = self.bed) 
+        self.b = icepack.interpolate(self.s - self.h, self.Q)
         
         self.w = width(self.x, Q=self.Q)
         
-        
+        self.massBalance()
 
 
 
     def __adjust_function(self, func_src, x_old, L, L_new, funcspace_dest):
         '''
-        Shrinks function spaces.
+        Adjusts (shrinks or grows) function spaces.
 
         Parameters
         ----------
@@ -469,16 +483,9 @@ class glacier:
         return(func_dest)    
     
     
-    def massBalance(self):
+    def massBalance(self, **kwargs):
         '''
-        Mass balance profile. Returns function space for the "adjusted" mass 
-        balance rate. For a flow line model,
-        
-        dh/dt = a - 1/w * d/dx(uhw) = a - d/dx(uh) - uh/w * dw/dx
-        
-        This code combines a - uh/w * dw/dx into one term, the adjusted mass
-        balance rate, so that the prognostic solver doesn't need to worry about
-        variations in glacier width.
+        Mass balance profile. 
     
         Parameters
         ----------
@@ -495,6 +502,9 @@ class glacier:
             balance rate
         '''
         
+        if "ELA" in kwargs:
+            param.ELA = kwargs["ELA"]
+        
         a_max = param.a_max
         a_gradient = param.a_gradient
         ELA = param.ELA
@@ -506,13 +516,32 @@ class glacier:
         # unmodified mass balance rate    
         self.a = firedrake.interpolate(a_gradient*((self.s-ELA) - 1/(2*k) * ln(1+exp(2*k*(self.s - z_threshold)))), self.Q)
         
-        # width gradient
-        dwdx = icepack.interpolate(self.w.dx(0), self.Q)
         
-        # modified mass balance rate
-        self.a_mod = icepack.interpolate(self.a-self.u*self.h/self.w*dwdx, self.Q)
+    def balanceFlux(self):
         
-             
+        u = firedrake.TrialFunction(self.Q) # unknown that we wish to determine
+    
+        v = firedrake.TestFunction(self.Q)
+    
+        iceMask = icepack.interpolate(conditional(self.h<=constant.hmin+1e-4, 0, 1), self.Q)
+    
+        # left and right hand sides of variational form
+        LHS = u.dx(0) * v * dx
+        RHS = (self.a * self.w * iceMask ) * v * dx # the thing that we are integrating
+    
+        bc = firedrake.DirichletBC(self.Q, (1e-1), 1)
+        
+        Qb = firedrake.Function(self.Q)
+        
+        firedrake.solve(LHS == RHS, Qb, bcs=[bc])
+        
+        self.Qb = Qb # balance flux [m^3 a^{-1}]
+        self.ub = icepack.interpolate(self.Qb/(self.h*self.w), self.Q) # balance velocity [m a^{-1}]
+        # self.ub = icepack.interpolate(self.Qb/self.h, self.Q) # balance velocity [m a^{-1}]
+        
+
+
+
 
 #%% sediment transport model
 class sediment:
@@ -640,11 +669,10 @@ class sediment:
         
         
         
-        self.calcQs()
+        self.calcQs(x_[-1])
         
         self.depositionRate = icepack.interpolate(paramSed.w * self.Qs / self.Qw, self.Q)
         
-        # not yet including hillslope diffusion, and should be implicit
         
         self.calcH(dt)
         
@@ -680,14 +708,15 @@ class sediment:
         
         H_new = icepack.interpolate(conditional(H<0.1, 0, H), self.Q)
         self.dHdt = icepack.interpolate((H_new - self.H)/dt, self.Q)
+        
         self.H = H_new
-    
         
         
-    def calcQs(self):
+    def calcQs(self, L):
         '''
         Calculates the width-averaged sediment flux [m^2 a^{-1}].
 
+        L = glacier length
         '''
         
         
@@ -700,6 +729,8 @@ class sediment:
         H = self.H.dat.data[index][::2]
         Qw = self.Qw.dat.data[index][::2]
         erosionRate = self.erosionRate.dat.data[index][::2]
+        
+        #eL = erosionRate[x==L]
         
         
         # Determine the domain to be used.
@@ -737,7 +768,7 @@ class sediment:
         H.dat.data[-1] = H_xarray[-1]
         Qw.dat.data[-1] = Qw_xarray[-1]
         erosionRate.dat.data[-1] = erosionRate_xarray[-1]
-       
+        
         
         u = firedrake.TrialFunction(Q) # unknown that we wish to determine
         
@@ -849,9 +880,10 @@ def basicPlot(glac, sed, basename, time):
     x = glac.x.dat.data[index]*1e-3
     h = glac.h.dat.data[index]
     s = glac.s.dat.data[index]
-    u = icepack.depth_average(glac.u).dat.data[index]
+    u = icepack.depth_average(glac.u_bar).dat.data[index]
     b = glac.b.dat.data[index]
     w = glac.w.dat.data[index]*1e-3
+    ub = glac.ub.dat.data[index]
     
     L = x[-1]
     
@@ -876,7 +908,7 @@ def basicPlot(glac, sed, basename, time):
     axes[2,0].set_xlabel('Longitudinal Coordinate [km]')
     axes[2,0].set_ylabel('Speed [m/yr]')
     axes[2,0].set_xlim(xlim)
-    axes[2,0].set_ylim(np.array([0,2000]))
+    axes[2,0].set_ylim(np.array([0,3000]))
     
     axes[0,1].set_xlabel('Longitudinal Coordinate [km]')
     axes[0,1].set_ylabel('Flux per width [km$^2$ a$^{-1}$]')
@@ -921,7 +953,10 @@ def basicPlot(glac, sed, basename, time):
     axes[1,0].fill_between(x, w/2, -w/2, color='white')
     
     
-    axes[2,0].plot(x, u, 'k')
+    axes[2,0].plot(x, u, 'k', label='average velocity')
+    axes[2,0].plot(x, ub, 'k--', label='balance velocity')
+    axes[2,0].legend(loc='upper left')
+    
     
     axes[3,0].axis('off')
     
