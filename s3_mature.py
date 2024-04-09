@@ -48,7 +48,7 @@ _, glac.tideLine = func.bedrock(glac.x, Q=glac.Q) #
 # (also requires that terminus be in the water) 
 # sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
 # sed.H[sed.H<2] = 2
-sed = sediment(-glac.b.dat.data[-1]-20) # initialize the sediment model
+sed = sediment(-glac.b.dat.data[-1]-1) # initialize the sediment model
 
 
 # set up hybrid model solver with custom friction function
@@ -114,8 +114,9 @@ for step in tqdm.trange(num_timesteps):
     glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.b)
     
     # find new terminus position
-    L_new = np.max([func.find_endpoint_massflux(glac, L, dt), glac.tideLine])
+    # L_new = np.max([func.find_endpoint_massflux(glac, L, dt), glac.tideLine])
     # L_new = np.max([func.find_endpoint_haf(L, glac.h, glac.s), glac.tideLine])
+    L_new = np.max([func.find_endpoint_modified_haf(glac), glac.tideLine])
     
     # regrid, if necessary
     if L_new > glac.tideLine: # if tidewater glacier, always need to regrid

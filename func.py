@@ -76,7 +76,7 @@ class paramsSed:
     def __init__(self):
         # Brinkerhoff model
         self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 2e-12 # Brinkerhoff used 2e-12
+        self.c = 2*2e-12 # Brinkerhoff used 2e-12
         self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
         
