@@ -200,120 +200,14 @@ def initial_velocity(x, V):
 
 
 
-#%% functions for re-meshing the model
-def find_endpoint_massflux(glac, L, dt):
-    '''
-    Finds the new glacier length using the mass-flux calving parameterization
-    of Amundson (2016) and Amundson and Carroll (2018).
-
-    Parameters
-    ----------
-    L : current glacier length [m]
-    x, a, u, h, w : firedrake functions for the longitudinal position, mass 
-        balance rate, velocity, thickness, and width
-    dt : time step size [a]
-
-    Returns
-    -------
-    L_new : new glacier length [m]
-    '''
-    
-    alpha = 1.13 # frontal ablation parameter
-    
-    # Qb = firedrake.assemble(glac.a * glac.w * dx) # balance flux [m^3 a^{-1}]
-    
-    index = np.argsort(glac.x.dat.data)
-    
-    # Wt = glac.w.dat.data[index[-1]] # terminus width [m]
-    # Ht = glac.h.dat.data[index[-1]] # terminus thickness
-    
-    # Ub = Qb / (Wt*Ht) # balance velocity [m a^{-1}]
-    
-    glac.balanceFlux()
-    Ub = glac.ub.dat.data[index[-1]]
-    Ut = icepack.depth_average(glac.u_bar).dat.data[index[-1]] # centerline terminus velocity [m a^{-1}]
-    
-    
-    dLdt = (alpha-1)*(Ub-Ut) # rate of length change [m a^{-1}]
-    
-    L_new = L + dLdt*dt
-    
-    dLdt = (L_new-L)/param.dt
-    print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
-    
-    return(L_new)
 
 
 
-def find_endpoint_haf(L, h, s):
-    '''
-    Finds new glacier length using the height above flotation calving criteria.
-    For some reason this only works if desired height above flotation is more 
-    than about 5 m.
-
-    Parameters
-    ----------
-    L : domain length [m]
-    h, s : firedrake functions for the thickness and surface elevation
-
-    Returns
-    -------
-    L_new : new domain length [m]
-
-    '''
-    
-    zb = firedrake.interpolate(s-h, s.function_space()) # glacier bed elevation [m]
-    
-    h_flotation = firedrake.interpolate(-rho_water/rho_ice*zb, s.function_space()) # thickness flotation (thickness if at flotation) [m]
-    haf = firedrake.interpolate(h - h_flotation, s.function_space()) # height above flotation [m]
-
-    haf_dat = haf.dat.data # height above flotation as a numpy array
-    x_dat = np.linspace(0, L, len(h.dat.data), endpoint=True) # grid points as a numpy array [m]
-    haf_interpolator = interp1d(haf_dat, x_dat, kind='linear', fill_value='extrapolate')
-    
-    haf_desired = 50 # desired height above flotation at the terminus
-    L_new = haf_interpolator(haf_desired) # new domain length
-    dLdt = (L_new-L)/param.dt
-    print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
-
-    return(L_new)
 
 
-def find_endpoint_modified_haf(glac):
-    '''
-    Finds new glacier length using the height above flotation calving criteria.
-    For some reason this only works if desired height above flotation is more 
-    than about 5 m.
 
-    Parameters
-    ----------
-    L : domain length [m]
-    h, s : firedrake functions for the thickness and surface elevation
 
-    Returns
-    -------
-    L_new : new domain length [m]
 
-    '''
-    
-    q = 0.15
-    f = icepack.interpolate(glac.h + rho_water/rho_ice*(1+q)*glac.b, glac.Q) # function to find zero of
-    
-    index = np.argsort(glac.x.dat.data)
-    x = glac.x.dat.data[index]
-    f = f.dat.data[index]
-    
-    L = x[-1]
-    
-    f_interpolator = interp1d(f, x, kind='linear', fill_value='extrapolate')
-    
-    L_new = f_interpolator(0)
-    
-   
-    dLdt = (L_new-L)/param.dt
-    print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
-
-    return(L_new)
 
 
 
@@ -579,8 +473,125 @@ class glacier:
         self.ub = icepack.interpolate(self.Qb/(self.h*self.w), self.Q) # balance velocity [m a^{-1}]
         # self.ub = icepack.interpolate(self.Qb/self.h, self.Q) # balance velocity [m a^{-1}]
         
+    def find_endpoint_haf(self):
+        '''
+        Finds new glacier length using the height above flotation calving criteria.
+        For some reason this only works if desired height above flotation is more 
+        than about 5 m.
+    
+        Parameters
+        ----------
+        L : domain length [m]
+        h, s : firedrake functions for the thickness and surface elevation
+    
+        Returns
+        -------
+        L_new : new domain length [m]
+    
+        '''
+        
+        
+        h_flotation = firedrake.interpolate(-rho_water/rho_ice*self.b, self.Q) # thickness flotation (thickness if at flotation) [m]
+        haf = firedrake.interpolate(self.h - h_flotation, self.Q) # height above flotation [m]
+    
+        
+        index = np.argsort(self.x.dat.data)
+        x = self.x.dat.data[index]
+        haf_dat = haf.dat.data[index] # height above flotation as a numpy array
+        
+        haf_interpolator = interp1d(haf_dat, x, kind='linear', fill_value='extrapolate')
+        
+        haf_desired = 50 # desired height above flotation at the terminus
+        L_new = haf_interpolator(haf_desired) # new domain length
+        
+        L = x[-1]
+        dLdt = (L_new-L)/param.dt
+        print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
+    
+        return(L_new)
 
 
+
+    def find_endpoint_modified_haf(self):
+        '''
+        Finds new glacier length using the height above flotation calving criteria.
+        For some reason this only works if desired height above flotation is more 
+        than about 5 m.
+    
+        Parameters
+        ----------
+        L : domain length [m]
+        h, s : firedrake functions for the thickness and surface elevation
+    
+        Returns
+        -------
+        L_new : new domain length [m]
+    
+        '''
+        
+        q = 0.15
+        f = icepack.interpolate(self.h + rho_water/rho_ice*(1+q)*self.b, self.Q) # function to find zero of
+        
+        index = np.argsort(self.x.dat.data)
+        x = self.x.dat.data[index]
+        f = f.dat.data[index]
+        
+        L = x[-1]
+        
+        f_interpolator = interp1d(f, x, kind='linear', fill_value='extrapolate')
+        
+        L_new = f_interpolator(0)
+        
+       
+        dLdt = (L_new-L)/param.dt
+        print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
+    
+        return(L_new)
+
+
+    def find_endpoint_massflux(self):
+        '''
+        Finds the new glacier length using the mass-flux calving parameterization
+        of Amundson (2016) and Amundson and Carroll (2018).
+    
+        Parameters
+        ----------
+        L : current glacier length [m]
+        x, a, u, h, w : firedrake functions for the longitudinal position, mass 
+            balance rate, velocity, thickness, and width
+        dt : time step size [a]
+    
+        Returns
+        -------
+        L_new : new glacier length [m]
+        '''
+        
+        alpha = 1.13 # frontal ablation parameter
+        
+        # Qb = firedrake.assemble(glac.a * glac.w * dx) # balance flux [m^3 a^{-1}]
+        
+        index = np.argsort(self.x.dat.data)
+        x = self.x.dat.data[index]
+        # Wt = glac.w.dat.data[index[-1]] # terminus width [m]
+        # Ht = glac.h.dat.data[index[-1]] # terminus thickness
+        
+        # Ub = Qb / (Wt*Ht) # balance velocity [m a^{-1}]
+        
+        self.balanceFlux()
+        Ub = self.ub.dat.data[index[-1]]
+        Ut = icepack.depth_average(self.u_bar).dat.data[index[-1]] # centerline terminus velocity [m a^{-1}]
+        
+        
+        dLdt = (alpha-1)*(Ub-Ut) # rate of length change [m a^{-1}]
+        
+        L = x[-1]
+        L_new = L + dLdt*param.dt
+       
+        
+        dLdt = (L_new-L)/param.dt
+        print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
+        
+        return(L_new)
 
 
 #%% sediment transport model
