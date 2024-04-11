@@ -9,6 +9,7 @@
 # also Delaney paper on sugset_2d; discuss supply limited vs transport limited regimes
 # linear interpolation for height above flotation
 # issue with eroding where there isn't sediment (as result of backward Euler?)
+# cheap hack to keep moraine submerged!!!
 
 import numpy as np
 
@@ -58,7 +59,7 @@ class params:
     
     def __init__(self):
         self.n = 200 # number of grid points
-        self.dt = 0.1 # time step size [a]
+        self.dt = 0.05 # time step size [a]
         self.L = 30e3 # initial domain length [m]
         self.Lsed = 80e3 # length of sediment model [m]
         self.sedDepth = 50 # depth to sediment, from sea level, prior to advance scenario [m]
@@ -75,8 +76,8 @@ class paramsSed:
     
     def __init__(self):
         # Brinkerhoff model
-        self.h_eff = 0.1 # effective water thickness [m]
-        self.c = 2*2e-12 # Brinkerhoff used 2e-12
+        self.h_eff = 0.05 # effective water thickness [m]
+        self.c = 2e-12 # Brinkerhoff used 2e-12
         self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
         
@@ -270,7 +271,7 @@ def find_endpoint_haf(L, h, s):
     x_dat = np.linspace(0, L, len(h.dat.data), endpoint=True) # grid points as a numpy array [m]
     haf_interpolator = interp1d(haf_dat, x_dat, kind='linear', fill_value='extrapolate')
     
-    haf_desired = 10 # desired height above flotation at the terminus
+    haf_desired = 50 # desired height above flotation at the terminus
     L_new = haf_interpolator(haf_desired) # new domain length
     dLdt = (L_new-L)/param.dt
     print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
@@ -370,7 +371,7 @@ def side_drag(w):
     
     '''
     
-    Cs = firedrake.interpolate( 2/w * (4/(constant.A*w))**(1/3), w.function_space())
+    Cs = firedrake.interpolate( 2/w * (4/(constant.A*w))**(1/3), w.function_space()) # consistent with Gagliardini et al. (2010)
 
     return Cs
 
@@ -688,11 +689,13 @@ class sediment:
         bed = icepack.interpolate(self.bedrock+self.H, self.Q)
         alpha = bed.dx(0) # bed slope
 
-        self.h_eff = icepack.interpolate(paramSed.h_eff * exp(10*alpha), self.Q) # !!! might need some more thought !!!
+        self.h_eff = icepack.interpolate(paramSed.h_eff * exp(1e-10*alpha), self.Q) # !!! might need some more thought !!!
         
         self.h_eff = icepack.interpolate(conditional(self.x>x_[-1], -(self.bedrock+self.H), self.h_eff), self.Q)
         
-        self.delta_s = icepack.interpolate(1-exp(-self.H/10), self.Q)
+        # self.h_eff = icepack.interpolate(conditional(self.x>x_[-1], -(self.bedrock+self.H), paramSed.h_eff), self.Q)
+        
+        self.delta_s = icepack.interpolate(1-exp(-self.H/2), self.Q)
         
         self.erosionRate = icepack.interpolate(paramSed.c * self.Qw**2/self.h_eff**3 * self.delta_s, self.Q)
         
@@ -719,8 +722,7 @@ class sediment:
         
         
         
-        
-        self.calcQs(x_[-1])
+        self.calcQs()
         
         self.depositionRate = icepack.interpolate(paramSed.w * self.Qs / self.Qw, self.Q)
         
@@ -767,8 +769,10 @@ class sediment:
         
         self.H = H_new
         
+        icepack.interpolate(conditional(self.H<-self.bedrock-5, self.H, -5), self.Q) # cheap hack to keep moraine submerged !!!
         
-    def calcQs(self, L):
+        
+    def calcQs(self):
         '''
         Calculates the width-averaged sediment flux [m^2 a^{-1}].
 
@@ -785,8 +789,8 @@ class sediment:
         H = self.H.dat.data[index][::2]
         Qw = self.Qw.dat.data[index][::2]
         erosionRate = self.erosionRate.dat.data[index][::2]
+        deltaS = self.delta_s.dat.data[index][::2]
         
-        #eL = erosionRate[x==L]
         
         
         # Determine the domain to be used.
@@ -799,7 +803,7 @@ class sediment:
         H_xarray = xarray.DataArray(H[index], [x[index]], 'x')
         Qw_xarray = xarray.DataArray(Qw[index], [x[index]], 'x')
         erosionRate_xarray = xarray.DataArray(erosionRate[index], [x[index]], 'x')
-        
+        deltaS_xarray = xarray.DataArray(deltaS[index], [x[index]], 'x')
         
         # Create new mesh and set up new function space.       
         # First determine grid spacing and number of grid points in the new 
@@ -818,13 +822,14 @@ class sediment:
         H = icepack.interpolate(H_xarray, Q)
         Qw = icepack.interpolate(Qw_xarray, Q)
         erosionRate = icepack.interpolate(erosionRate_xarray, Q)
+        deltaS = icepack.interpolate(deltaS_xarray, Q)
         
         
         # For some reason, the last grid point is often set to nan. Fix this.
         H.dat.data[-1] = H_xarray[-1]
         Qw.dat.data[-1] = Qw_xarray[-1]
         erosionRate.dat.data[-1] = erosionRate_xarray[-1]
-        
+        deltaS.dat.data[-1] = deltaS_xarray[-1]
         
         u = firedrake.TrialFunction(Q) # unknown that we wish to determine
         
@@ -837,7 +842,7 @@ class sediment:
         
         Qs = firedrake.Function(Q) # create empty function to hold the solution
         
-        bc = firedrake.DirichletBC(Q, (0), 1)
+        bc = firedrake.DirichletBC(Q, (0), 1) 
         
         firedrake.solve(LHS == RHS, Qs, bcs=[bc])
         
@@ -849,11 +854,7 @@ class sediment:
         Qs_xarray = xarray.DataArray(Qs_interpolator(self.x.dat.data), [self.x.dat.data], 'x')
         self.Qs = icepack.interpolate(Qs_xarray, self.Q)
         
-        # create empty array for Qs and populate
         
-        #self.Qs = icepack.interpolate(0*self.Qw, self.Q) # create empty array for Qs
-        #self.Qs.dat.data[2*index[0]:] = Qs.dat.data[Qs_index] # populate with solution
-        #self.Qs.dat.data[-len(Qs_index):] = Qs.dat.data[Qs_index] # populate with solution
         
     
     
