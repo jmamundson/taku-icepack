@@ -80,14 +80,20 @@ for step in tqdm.trange(num_timesteps):
     
     glac.h = icepack.interpolate(area/glac.w, glac.Q)
     
+    # L_new = L + glac.u.dat.data[-1]*param.dt
+    
+    # glac.regrid(param.n, L, L_new, sed)
     
     # determine surface elevation
     glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.bed)
-    
+
     # find new terminus position
-    L_new = np.max([glac.find_endpoint_massflux(), glac.tideLine])
-    # L_new = np.max([glac.find_endpoint_modified_haf(), glac.tideLine])
-    #L_new = np.max([glac.find_endpoint_haf(), glac.tideLine])
+    # L_new = np.max([glac.massFlux(), glac.tideLine])
+    # L_new = np.max([glac.HAF(), glac.tideLine])
+    L_new = np.max([glac.HAFmodified(), glac.tideLine])
+    # L_new = np.max([glac.crevasseDepth(), glac.tideLine])
+    # L_new = np.max([glac.eigencalving(), glac.tideLine])
+    # L_new = np.max([glac.vonMises(), glac.tideLine])
     
     # regrid, if necessary
     if L_new > glac.tideLine: # if tidewater glacier, always need to regrid

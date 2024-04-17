@@ -10,6 +10,7 @@
 # linear interpolation for height above flotation
 # issue with eroding where there isn't sediment (as result of backward Euler?)
 # cheap hack to keep moraine submerged!!!
+# behaves strangely if terminus goes afloat?
 
 import numpy as np
 
@@ -59,7 +60,7 @@ class params:
     
     def __init__(self):
         self.n = 200 # number of grid points
-        self.dt = 0.05 # time step size [a]
+        self.dt = 0.1 # time step size [a]
         self.L = 30e3 # initial domain length [m]
         self.Lsed = 80e3 # length of sediment model [m]
         self.sedDepth = 50 # depth to sediment, from sea level, prior to advance scenario [m]
@@ -76,8 +77,8 @@ class paramsSed:
     
     def __init__(self):
         # Brinkerhoff model
-        self.h_eff = 0.05 # effective water thickness [m]
-        self.c = 2e-12 # Brinkerhoff used 2e-12
+        self.h_eff = 0.075 # effective water thickness [m]; Brinkerhoff use 0.1 m
+        self.c = 4e-12 # Brinkerhoff used 2e-12
         self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
         
@@ -133,10 +134,10 @@ def width(x, **kwargs):
     '''
     
     
-    k = 5 # smoothing parameter
+    k = 4 # smoothing parameter
     x_step = 10e3 # location of step [m]
-    w_fjord = 2e3 # fjord width [m]
-    w_max = 12e3 - w_fjord # maximum valley width [m]
+    w_fjord = 4e3 # fjord width [m]
+    w_max = 14e3 - w_fjord # maximum valley width [m]
     
     if "Q" in kwargs: # create firedrake function
         Q = kwargs["Q"]
@@ -322,19 +323,21 @@ class glacier:
         self.Q = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="R", vdegree=0)
         self.V = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="GL", vdegree=2, name='velocity')
         
-
         x_sc, z_sc = firedrake.SpatialCoordinate(self.mesh)
         self.x = firedrake.interpolate(x_sc, self.Q)
         self.z = firedrake.interpolate(z_sc, self.Q)
         
-        xSed = sed.x.dat.data
+        # determine "bed" elevation, i.e., the elevation of the valley bottom
+        xSed = sed.x.dat.data # x-coordinate in sediment model
         index = np.argsort(xSed)
         xSed = xSed[index]
-        bedSed = sed.H.dat.data[index] + sed.bedrock.dat.data[index]
+        bedSed = sed.H.dat.data[index] + sed.bedrock.dat.data[index] # bedrock + sediment in sediment model
         
-        # zBed_interpolator = interp1d(sed.x, sed.H+sed.zBedrock, kind='linear') # create interpolator to put bed elevation into a firedrake function
-        zBed_interpolator = interp1d(xSed, bedSed, kind='quadratic') # create interpolator to put bed elevation into a firedrake function
-        zBed_xarray = xarray.DataArray(zBed_interpolator(self.x.dat.data), [self.x.dat.data], 'x')
+        zBed_interpolator = interp1d(xSed, bedSed, kind='linear') # create interpolator to put bed elevation into a firedrake function
+        
+        
+        index = np.argsort(self.x.dat.data)
+        zBed_xarray = xarray.DataArray(zBed_interpolator(self.x.dat.data[index][::2]), [self.x.dat.data[index][::2]], 'x')
         self.bed = icepack.interpolate(zBed_xarray, self.Q)
 
         # remesh thickness and velocity
@@ -473,11 +476,11 @@ class glacier:
         self.ub = icepack.interpolate(self.Qb/(self.h*self.w), self.Q) # balance velocity [m a^{-1}]
         # self.ub = icepack.interpolate(self.Qb/self.h, self.Q) # balance velocity [m a^{-1}]
         
-    def find_endpoint_haf(self):
+    def HAF(self):
         '''
         Finds new glacier length using the height above flotation calving criteria.
         For some reason this only works if desired height above flotation is more 
-        than about 5 m.
+        than about 5 m. Don't use all grid points?
     
         Parameters
         ----------
@@ -499,9 +502,9 @@ class glacier:
         x = self.x.dat.data[index]
         haf_dat = haf.dat.data[index] # height above flotation as a numpy array
         
-        haf_interpolator = interp1d(haf_dat, x, kind='linear', fill_value='extrapolate')
+        haf_interpolator = interp1d(haf_dat[::2], x[::2], kind='linear', fill_value='extrapolate')
         
-        haf_desired = 50 # desired height above flotation at the terminus
+        haf_desired = 10 # desired height above flotation at the terminus
         L_new = haf_interpolator(haf_desired) # new domain length
         
         L = x[-1]
@@ -511,8 +514,7 @@ class glacier:
         return(L_new)
 
 
-
-    def find_endpoint_modified_haf(self):
+    def HAFmodified(self):
         '''
         Finds new glacier length using the height above flotation calving criteria.
         For some reason this only works if desired height above flotation is more 
@@ -549,7 +551,7 @@ class glacier:
         return(L_new)
 
 
-    def find_endpoint_massflux(self):
+    def massFlux(self):
         '''
         Finds the new glacier length using the mass-flux calving parameterization
         of Amundson (2016) and Amundson and Carroll (2018).
@@ -593,7 +595,99 @@ class glacier:
         
         return(L_new)
 
+    def crevasseDepth(self):
+        
+        u_ = icepack.interpolate(4/5*self.u, self.Q) # width- and depth-averaged velocity
+        exx = icepack.interpolate(u_.dx(0), self.Q) # width- and depth-averaged strain rate
+        # note: assume critical strain rate for crevasse opening is 0
+        
+        d = icepack.interpolate(2/(rho_ice*g)*(exx/constant.A)**(1/3), self.Q) # crevasse depth [m]
 
+        f = icepack.interpolate(self.s-d, self.Q) # function to find zero of
+
+        # create interpolator
+        index = np.argsort(self.x.dat.data)
+        x = self.x.dat.data[index]
+        f = f.dat.data[index]
+        
+        f_interpolator = interp1d(f, x, kind='linear', fill_value='extrapolate')
+        
+        L_new = f_interpolator(0)
+        L = x[-1]
+        
+        dLdt = (L_new-L)/param.dt
+        print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
+        
+        return(L_new)
+
+
+
+    def vonMises(self):
+        
+        index = np.argsort(self.x.dat.data)
+        Ut = icepack.depth_average(self.u).dat.data[index][-1]
+        Ht = self.h.dat.data[index][-1] # terminus thickness
+        L = self.x.dat.data[index][-1]
+        
+        couplingLength = Ht*4.5 # somewhat arbitrary
+        
+        u = icepack.interpolate(4/5*self.u, self.Q) # depth- and width-averaged velocity
+        
+        # eigenvalues of the horizontal strain rate; eps2 assumed to equal 0
+        eps1 = icepack.interpolate(u.dx(0), self.Q)#.dat.data[index] # depth- and width-averaged strain rate
+        
+        eps1 = eps1.dat.data[index][-1]
+        #x = self.x.dat.data
+        
+        
+        #eps1 = icepack.interpolate(conditional(self.x<L-couplingLength, np.nan, eps1), self.Q)
+        #eps1 = np.nanmean(eps1.dat.data)
+        
+        
+        eps_e = np.sqrt(0.5*np.max(eps1,0)**2) # effective tensile strain rate
+        
+        sigma = np.sqrt(3)*constant.A.dat.data[0]**(-1/3)*eps_e**(1/3)
+        
+        sigma_threshold = 0.1 # MPa, I think!
+        
+        Uc = Ut*sigma/sigma_threshold 
+
+        dLdt = Ut-Uc
+
+        L_new = L + dLdt*param.dt
+        
+        print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
+        return(L_new)
+
+
+    def eigencalving(self):
+        '''
+        not quite sure how to implement in 1D model
+
+        Returns
+        -------
+        None.
+
+        '''
+        
+        index = np.argsort(self.x.dat.data)
+        x = self.x.dat.data[index][::2]
+        u = icepack.interpolate(4/5*self.u, self.Q).dat.data[index][::2]
+        
+        L = x[-1]
+        exx = (u[-1]-u[-2])/x[1]
+        Ut = u[-1]
+        K = 1.5e3
+        
+        dLdt = Ut - K*exx
+        
+        L_new = L + dLdt*param.dt
+        
+        print('dL/dt: ' + "{:.02f}".format(dLdt) + ' m a^{-1}')
+        
+        return(L_new)
+    
+    
 #%% sediment transport model
 class sediment:
     
@@ -700,7 +794,7 @@ class sediment:
         bed = icepack.interpolate(self.bedrock+self.H, self.Q)
         alpha = bed.dx(0) # bed slope
 
-        self.h_eff = icepack.interpolate(paramSed.h_eff * exp(1e-10*alpha), self.Q) # !!! might need some more thought !!!
+        self.h_eff = icepack.interpolate(paramSed.h_eff * exp(alpha), self.Q) # !!! might need some more thought !!!
         
         self.h_eff = icepack.interpolate(conditional(self.x>x_[-1], -(self.bedrock+self.H), self.h_eff), self.Q)
         
@@ -733,7 +827,7 @@ class sediment:
         
         
         
-        self.calcQs()
+        self.calcQs(np.max(x_))
         
         self.depositionRate = icepack.interpolate(paramSed.w * self.Qs / self.Qw, self.Q)
         
@@ -766,10 +860,12 @@ class sediment:
         H_.assign(self.H)
         H.assign(self.H)
         
-        theta = 0.5 # 0.5 = Crank-Nicolson; 0 and 1 are explicit and implicit Euler
+        theta = 1 # 0.5 = Crank-Nicolson; 0 and 1 are explicit and implicit Euler
         
+        # !!! check diffusion term; may need to multiply by delta_s
         LHS = ( (H-H_)/dt*v + 
-               paramSed.k*(H.dx(0)+self.bedrock.dx(0))*self.delta_s*v.dx(0) + 
+               theta*paramSed.k*(H.dx(0)+self.bedrock.dx(0))*v.dx(0) + 
+               (1-theta)*paramSed.k*(H_.dx(0)+self.bedrock.dx(0))*v.dx(0)+
                theta*(self.erosionRate - self.depositionRate)*v + 
                (1-theta)*(self._erosionRate - self._depositionRate)*v) * dx
         
@@ -783,7 +879,7 @@ class sediment:
         icepack.interpolate(conditional(self.H<-self.bedrock-5, self.H, -5), self.Q) # cheap hack to keep moraine submerged !!!
         
         
-    def calcQs(self):
+    def calcQs(self, L):
         '''
         Calculates the width-averaged sediment flux [m^2 a^{-1}].
 
@@ -807,7 +903,11 @@ class sediment:
         # Determine the domain to be used.
         index = H.nonzero()[0] # grid points that have sediment
         ind0 = index[0] # index of first grid point with sediment
-        x0 = x[ind0] # first point of nonzero thickness
+        x0 = np.min([L, x[ind0]]) # terminus or first point of nonzero thickness
+        
+        if x0==L:
+            index = np.array([i for i, x in enumerate(x) if x > L])
+        
         xL = np.max(self.x.dat.data) # last grid point
         
         # Create shortened xarrays for putting back into functions.
@@ -846,14 +946,19 @@ class sediment:
         
         v = firedrake.TestFunction(Q)
 
-
+        
+        
+        
         # left and right hand sides of variational form
         LHS = u * ( -v.dx(0) + paramSed.w/Qw*v ) * dx
-        RHS = erosionRate * v *dx
+        RHS = (erosionRate) * v * dx # ! includes 1 mm/yr bedrock erosion
         
         Qs = firedrake.Function(Q) # create empty function to hold the solution
         
-        bc = firedrake.DirichletBC(Q, (0), 1) 
+        Qs_in = np.min([x0, L])*1 # assume constant erosion rate over glacier-covered area
+        
+        bc = firedrake.DirichletBC(Q, (Qs_in), 1) 
+        
         
         firedrake.solve(LHS == RHS, Qs, bcs=[bc])
         
@@ -971,7 +1076,7 @@ def basicPlot(glac, sed, basename, time):
     axes[1,0].set_xlabel('Longitudinal Coordinate [km]')
     axes[1,0].set_ylabel('Transverse Coordinate [km]')
     axes[1,0].set_xlim(xlim)
-    axes[1,0].set_ylim(np.array([-6, 6]))
+    axes[1,0].set_ylim(np.array([-10, 10]))
     
     axes[2,0].set_xlabel('Longitudinal Coordinate [km]')
     axes[2,0].set_ylabel('Speed [m/yr]')

@@ -16,7 +16,6 @@ constant = constants()
 param = params()
 
 import glob
-import pickle
 
 #%% 
 files = sorted(glob.glob('./results/spinup/*h5'))
@@ -48,8 +47,8 @@ _, glac.tideLine = func.bedrock(glac.x, Q=glac.Q) #
 # (also requires that terminus be in the water) 
 # sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
 # sed.H[sed.H<2] = 2
-sed = sediment(-glac.b.dat.data[-1]-5) # initialize the sediment model
-
+sed = sediment(-glac.b.dat.data[-1]+10) # initialize the sediment model
+# sed.H.dat.data[sed.H.dat.data>0] = 0
 
 # set up hybrid model solver with custom friction function
 model = icepack.models.HybridModel(friction = schoof_approx_friction)
@@ -112,11 +111,14 @@ for step in tqdm.trange(num_timesteps):
     
     # determine surface elevation
     glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.b)
-    
+
     # find new terminus position
-    # L_new = np.max([func.find_endpoint_massflux(glac, L, dt), glac.tideLine])
-    # L_new = np.max([func.find_endpoint_haf(L, glac.h, glac.s), glac.tideLine])
-    L_new = np.max([func.find_endpoint_modified_haf(glac), glac.tideLine])
+    L_new = np.max([glac.massFlux(), glac.tideLine])
+    # L_new = np.max([glac.HAF(), glac.tideLine])
+    # L_new = np.max([glac.HAFmodified(), glac.tideLine])
+    # L_new = np.max([glac.crevasseDepth(), glac.tideLine])
+    # L_new = np.max([glac.eigencalving(), glac.tideLine])
+    # L_new = np.max([glac.vonMises(), glac.tideLine])
     
     # regrid, if necessary
     if L_new > glac.tideLine: # if tidewater glacier, always need to regrid
@@ -168,6 +170,5 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(sed.dHdt, name="dHdt")
         checkpoint.save_function(sed.Qw, name="runoff")
         checkpoint.save_function(sed.Qs, name="sedimentFlux")
-        
 
     func.basicPlot(glac, sed, basename, time[step])
