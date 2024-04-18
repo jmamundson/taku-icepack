@@ -66,7 +66,7 @@ class params:
         self.sedDepth = 50 # depth to sediment, from sea level, prior to advance scenario [m]
         self.a_max = 5 # maximum mass balance rate [m a^{-1}]
         self.a_gradient = 0.012 # mass balance gradient
-        self.ELA = 500 # equilbrium line altitude [m]
+        self.ELA = 800 # equilbrium line altitude [m]
 
 param = params()
 
@@ -713,7 +713,9 @@ class sedimentFD:
         self.H[self.x>sedLevelInit] = -sedDepth-self.bedrock[self.x>sedLevelInit]
     
         
-    
+        self.Qw = np.zeros(len(self.x))
+        self.Qs = np.zeros(len(self.x))
+        self.dHdt = np.zeros(len(self.x))
         self.erosionRate = np.zeros(len(self.x))
         self.depositionRate = np.zeros(len(self.x))
 
@@ -803,8 +805,17 @@ class sedimentFD:
         # allows for some small erosion in front of the glacier, especially if the water gets shallow
         self.h_eff = paramSed.h_eff*np.ones(len(self.x)) 
         
+        
+
+
+        zBed = H_guess+self.bedrock # elevation of glacier bed from previous time step
+        alpha = np.gradient(zBed, self.x)    
+        
+        
         index = self.x>xGlacier[-1]
         self.h_eff[index] = -(H_guess[index]+self.bedrock[index]) 
+        
+        self.h_eff = self.h_eff*np.exp(5*alpha)
         
         self.erosionRate = paramSed.c * self.Qw**2/self.h_eff**3 * self.delta_s
         
@@ -831,7 +842,7 @@ class sedimentFD:
         self.depositionRate = np.zeros(len(self.Qs))
         self.depositionRate[self.Qw>0] = paramSed.w*self.Qs[self.Qw>0]/self.Qw[self.Qw>0]
     
-        zBed = H_guess+self.bedrock # elevation of glacier bed from previous time step
+        
     
         # calculate bed curvature for hillslope diffusion; dz^2/dx^2(zBed)
         zBed_curvature = (zBed[2:]-2*zBed[1:-1]+zBed[:-2])/dx**2

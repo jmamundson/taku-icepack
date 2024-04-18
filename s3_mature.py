@@ -71,6 +71,7 @@ length[0] = L
 
 time = np.linspace(0, num_timesteps*dt, num_timesteps+1, endpoint=True)
 
+param.ELA = 1000
 
 #%%
 for step in tqdm.trange(num_timesteps):
@@ -86,7 +87,7 @@ for step in tqdm.trange(num_timesteps):
     )
     
     # determine mass balance rate
-    glac.massBalance()
+    glac.massBalance(param=param)
     
     # solve for new thickness
     # use the prognostic solver to determine the new cross-sectional area, 
@@ -112,8 +113,8 @@ for step in tqdm.trange(num_timesteps):
 
     # find new terminus position
     # L_new = np.max([glac.massFlux(), glac.tideLine])
-    L_new = np.max([glac.HAF(), glac.tideLine])
-    # L_new = np.max([glac.HAFmodified(), glac.tideLine])
+    # L_new = np.max([glac.HAF(), glac.tideLine])
+    L_new = np.max([glac.HAFmodified(), glac.tideLine])
     # L_new = np.max([glac.crevasseDepth(), glac.tideLine])
     # L_new = np.max([glac.eigencalving(), glac.tideLine])
     # L_new = np.max([glac.vonMises(), glac.tideLine])

@@ -10,7 +10,7 @@ from firedrake import max_value
 import tqdm
 
 import func
-from func import schoof_approx_friction, side_drag, constants, params, glacier, sediment
+from func import schoof_approx_friction, side_drag, constants, params, glacier, sedimentFD
 
 constant = constants()
 param = params()
@@ -22,8 +22,8 @@ glac = glacier()
 # initialize sediment model with sediment thickness of 0
 # don't actually use it during model spin up but needed to pass into basic
 # plotting function
-sed = sediment(-50)
-sed.H.dat.data[sed.H.dat.data>0] = 0
+sed = sedimentFD(-50)
+sed.H[sed.H>0] = 0
 
 # set up hybrid model solver with custom friction function
 model = icepack.models.HybridModel(friction = schoof_approx_friction)
@@ -129,4 +129,4 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(glac.b, name="bed")
         checkpoint.save_function(glac.w, name="width")
 
-    func.basicPlot(glac, sed, basename, time[step])
+    func.basicPlotFD(glac, sed, basename, time[step])
