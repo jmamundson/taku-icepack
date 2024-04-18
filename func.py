@@ -27,7 +27,7 @@ import xarray
 from scipy.optimize import root
 
 from matplotlib import pyplot as plt
-
+import copy
 #%% basic constants parameters needed for the model
 
 # Import some constants from icepack
@@ -59,7 +59,7 @@ class params:
     '''
     
     def __init__(self):
-        self.n = 200 # number of grid points
+        self.n = 100 # number of grid points
         self.dt = 0.1 # time step size [a]
         self.L = 30e3 # initial domain length [m]
         self.Lsed = 80e3 # length of sediment model [m]
@@ -77,8 +77,8 @@ class paramsSed:
     
     def __init__(self):
         # Brinkerhoff model
-        self.h_eff = 0.075 # effective water thickness [m]; Brinkerhoff use 0.1 m
-        self.c = 4e-12 # Brinkerhoff used 2e-12
+        self.h_eff = 0.1 # effective water thickness [m]; Brinkerhoff use 0.1 m
+        self.c = 5e-12 # Brinkerhoff used 2e-12
         self.w = 500 # settling velocity [m a^{-1}]; Brinkerhoff used 500
         self.k = 5000 # sediment diffusivity; Brinkerhoff used 5000
         
@@ -152,56 +152,6 @@ def width(x, **kwargs):
         
         
     return(w)
-
-
-def initial_thickness(x, Q):
-    '''
-    Prescribe a linear initial thickness profile.
-
-    Parameters
-    ----------
-    x : firedrake function that contains the longitudinal coordinates of the grid points
-    Q : firedrake function space used for scalars
-
-    Returns
-    -------
-    h0 : firedrake function that contains the initial thickness at the grid points
-
-    '''
-    
-    h_divide, h_terminus = 300, 300 # thickness at the divide and the terminus [m]
-    h = h_divide - (h_divide-h_terminus) * x/x.dat.data[-1] # thickness profile [m]
-    h0 = firedrake.interpolate(h, Q)
-
-    return(h0)
-
-
-def initial_velocity(x, V):
-    '''
-    Prescribe a linear initial velocity profile.
-
-    Parameters
-    ----------
-    x : firedrake function that contains the longitudinal coordinates of the grid points
-    Q : firedrake function space used for scalars
-
-    Returns
-    -------
-    u0 : firedrake function that contains the initial velocity at the grid points
-    '''
-    
-    u_divide, u_terminus = 0, 500 # velocity at the divide and the terminus [m/yr]
-    u = u_divide + (u_terminus - u_divide) * x/x.dat.data[-1] # velocity profile
-    u0 = firedrake.interpolate(u, V) # Vector function space
-
-    return(u0)
-
-
-
-
-
-
-
 
 
 
@@ -290,12 +240,54 @@ class glacier:
 
         # create initial geometry
         self.bed, self.tideLine = bedrock(self.x, Q=self.Q) # bedrock + sediment
-        self.h = initial_thickness(self.x, self.Q)                  
+        self.h = self.__initial_thickness()                  
         self.s = icepack.compute_surface(thickness = self.h, bed = self.bed) 
-        self.u = initial_velocity(self.x, self.V)
+        self.u = self.__initial_velocity()
         self.w = width(self.x, Q=self.Q)
         self.b = icepack.interpolate(self.s-self.h, self.Q) # bottom of glacier; may or may not be floating
     
+    def __initial_velocity(self):
+        '''
+        Prescribe a linear initial velocity profile.
+
+        Parameters
+        ----------
+        x : firedrake function that contains the longitudinal coordinates of the grid points
+        Q : firedrake function space used for scalars
+
+        Returns
+        -------
+        u0 : firedrake function that contains the initial velocity at the grid points
+        '''
+        
+        u_divide, u_terminus = 0, 500 # velocity at the divide and the terminus [m/yr]
+        u = u_divide + (u_terminus - u_divide) * self.x/self.x.dat.data[-1] # velocity profile
+        u0 = firedrake.interpolate(u, self.V) # Vector function space
+
+        return(u0)
+    
+    def __initial_thickness(self):
+        '''
+        Prescribe a linear initial thickness profile.
+
+        Parameters
+        ----------
+        x : firedrake function that contains the longitudinal coordinates of the grid points
+        Q : firedrake function space used for scalars
+
+        Returns
+        -------
+        h0 : firedrake function that contains the initial thickness at the grid points
+
+        '''
+        
+        h_divide, h_terminus = 300, 300 # thickness at the divide and the terminus [m]
+        h = h_divide - (h_divide-h_terminus) * self.x/self.x.dat.data[-1] # thickness profile [m]
+        h0 = firedrake.interpolate(h, self.Q)
+
+        return(h0)
+    
+
     def regrid(self, n, L, L_new, sed):
         '''
         Create new mesh and interpolate functions onto the new mesh
@@ -328,10 +320,14 @@ class glacier:
         self.z = firedrake.interpolate(z_sc, self.Q)
         
         # determine "bed" elevation, i.e., the elevation of the valley bottom
-        xSed = sed.x.dat.data # x-coordinate in sediment model
-        index = np.argsort(xSed)
-        xSed = xSed[index]
-        bedSed = sed.H.dat.data[index] + sed.bedrock.dat.data[index] # bedrock + sediment in sediment model
+        # xSed = sed.x.dat.data # x-coordinate in sediment model
+        # index = np.argsort(xSed)
+        # xSed = xSed[index]
+        # bedSed = sed.H.dat.data[index] + sed.bedrock.dat.data[index] # bedrock + sediment in sediment model
+        
+        # use with finite differences
+        xSed = sed.x
+        bedSed = sed.H + sed.bedrock
         
         zBed_interpolator = interp1d(xSed, bedSed, kind='linear') # create interpolator to put bed elevation into a firedrake function
         
@@ -352,7 +348,6 @@ class glacier:
         self.w = width(self.x, Q=self.Q)
         
         self.massBalance()
-
 
 
     def __adjust_function(self, func_src, x_old, L, L_new, funcspace_dest):
@@ -688,23 +683,199 @@ class glacier:
         return(L_new)
     
     
+    
+#%% sediment transport model with finite differences
+    
+class sedimentFD:
+    
+
+    def __init__(self, sedDepth):
+        '''
+        Create grid and initial values of the sediment model.
+    
+        Parameters
+        ----------
+        L : domain length [m]
+        sedDepth = depth to sediment from sea level [m]
+    
+        '''
+        
+        self.x = np.linspace(0, param.Lsed, param.n, endpoint=True)
+        
+        self.bedrock, _ = bedrock(self.x)
+        
+        # determine x-location of start of sediment
+        bedInterpolator = interp1d(self.bedrock, self.x, kind='linear')
+        sedLevelInit = bedInterpolator(-sedDepth) # sediment fills fjord to 50 m depth
+    
+        # initial sediment thickness
+        self.H = np.zeros(len(self.bedrock)) # sediment thickness
+        self.H[self.x>sedLevelInit] = -sedDepth-self.bedrock[self.x>sedLevelInit]
+    
+        
+    
+        self.erosionRate = np.zeros(len(self.x))
+        self.depositionRate = np.zeros(len(self.x))
+
+    
+
+    def transport(self, glac, dt):
+        
+        
+        index = np.argsort(glac.x.dat.data)
+        xGlacier = glac.x.dat.data[index]
+        dx = xGlacier[1]
+        
+        # remesh sediment model
+        # this works because the sediment thickness is constant far from the glacier
+        sedH_interpolator = interp1d(self.x, self.H, kind='linear', fill_value='extrapolate')
+         
+        self.x = np.arange(0, param.Lsed, dx)
+        self.H = sedH_interpolator(self.x) # sediment thickness on extended glacier grid
+        self.H_old = self.H # store old value for backward Euler
+        
+        self.bedrock, _ = bedrock(self.x) # bedrock on extended glacier grid 
+        #self.w = width(self.x)
+        
+        
+        
+        result = root(self.__sedTransportImplicit, self.H_old, (glac, dt), method='hybr', options={'maxfev':int(1e6)})#, 'xtol':1e-12})
+        
+        self.H = result.x
+        # self.H[self.H<0] = 0 # temporary hack to keep thickness greater than 0!
+        
+        
+        zBed = self.H+self.bedrock # new bed elevation at sediment model grid points
+        
+        zBed_xarray = xarray.DataArray(zBed[:len(xGlacier)], [xGlacier], 'x')
+        # zBed_xarray = xarray.DataArray(zBed, [xGlacier], 'x')
+        
+        glac.b = icepack.interpolate(zBed_xarray, glac.Q)
+        
+        
+    
+
+
+
+    def __sedTransportImplicit(self, H_guess, glac, dt):
+        # use Backward Euler
+        
+
+        # create numpy array of glacier x-coordinates; make sure they are properly 
+        # sorted
+        index = np.argsort(glac.x.dat.data)
+        xGlacier = glac.x.dat.data[index]
+        dx = xGlacier[1]
+    
+        # mask out areas where the ice is less than 10 m thick, then extract melt rate
+        # at glacier x-coordinates
+        # iceMask really only does something if glacier is land-terminating
+        iceMask = icepack.interpolate(conditional(glac.h<=constant.hmin+1e-4, 0, 1), glac.Q)
+        
+        runoff = icepack.interpolate(param.a_max-glac.a, glac.Q)
+        runoff = icepack.interpolate(runoff*iceMask, glac.Q)
+        
+        runoff = runoff.dat.data[index]
+        w = glac.w.dat.data[index]
+        Qw = cumtrapz(runoff*w, dx=dx, initial=0)/w # runoff per unit width on the glacier grid
+    
+    
+    
+        ##### Increase runoff in fjord to account for submarine melting ##### 
+        beta = (Qw[-1]-Qw[-2])/(xGlacier[-1]-xGlacier[-2])
+        k = 0.001
+    
+        x_inflection = 5000 # distance from terminus to put "inflection point"
+    
+        coeff1 = beta*(1+np.exp(x_inflection*k))/(np.exp(x_inflection*k))
+        coeff2 = Qw[-1] + coeff1/k*np.log(1+np.exp(k*x_inflection))
+    
+        xFjord = self.x[self.x>xGlacier[-1]]
+        Qw_fjord = -coeff1/k*np.log(1+ np.exp(-k*(xFjord-(xGlacier[-1]+x_inflection)))) + coeff2
+    
+        self.Qw = np.concatenate((Qw, Qw_fjord))
+        
+    
+           
+        self.delta_s = (1-np.exp(-H_guess/2)) # similar to what Brinkerhoff has in code?
+        
+        # effective thickness is water depth if not glacier at the grid point
+        # allows for some small erosion in front of the glacier, especially if the water gets shallow
+        self.h_eff = paramSed.h_eff*np.ones(len(self.x)) 
+        
+        index = self.x>xGlacier[-1]
+        self.h_eff[index] = -(H_guess[index]+self.bedrock[index]) 
+        
+        self.erosionRate = paramSed.c * self.Qw**2/self.h_eff**3 * self.delta_s
+        
+    
+        ##### solve for sediment transport with left-sided difference #####
+        d = self.Qw + dx*paramSed.w
+        d[0] = 1
+        d[-1] = 1
+        
+        d_left = -self.Qw[1:]
+        d_left[-1] = 0
+        
+        diagonals = [d_left, d]
+        D = sparse.diags(diagonals, [-1,0]).toarray()
+        
+        f = dx*self.Qw*self.erosionRate
+        f[0] = 0
+        f[1] = 0
+        
+        self.Qs = np.linalg.solve(D,f)
+        
+    
+        # extra step needed here because problems when Qw==0
+        self.depositionRate = np.zeros(len(self.Qs))
+        self.depositionRate[self.Qw>0] = paramSed.w*self.Qs[self.Qw>0]/self.Qw[self.Qw>0]
+    
+        zBed = H_guess+self.bedrock # elevation of glacier bed from previous time step
+    
+        # calculate bed curvature for hillslope diffusion; dz^2/dx^2(zBed)
+        zBed_curvature = (zBed[2:]-2*zBed[1:-1]+zBed[:-2])/dx**2
+        zBed_left = (zBed[2]-2*zBed[1]+zBed[0])/dx**2
+        zBed_right = (zBed[-1]-2*zBed[-2]+zBed[-3])/dx**2
+    
+        zBed_curvature = np.concatenate(([zBed_left], zBed_curvature, [zBed_right]))
+    
+        # self.hillslope = paramSed.k*(1-np.exp(-self.H/10))*zBed_curvature*np.sign(self.H)
+        # redefine delta_s for hillslope?
+        delta_s = (1-np.exp(-H_guess/10))
+        self.hillslope = paramSed.k*zBed_curvature#*delta_s
+        
+        
+        self.dHdt = self.depositionRate - self.erosionRate + self.hillslope
+        RHS = self.dHdt
+    
+        # backward Euler (RHS depends on H_guess)
+        res = H_guess - self.H_old - RHS*dt
+        
+        return(res)
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 #%% sediment transport model
 class sediment:
     
     def __init__(self, sedDepth):
 
         L = param.Lsed
-        self.mesh1d = firedrake.IntervalMesh(param.n, L)
-        self.mesh = firedrake.ExtrudedMesh(self.mesh1d, layers=1, name="mesh")
-
-        # set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh
-        self.Q = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="R", vdegree=0)
-
-        # create scalar functions for the spatial coordinates
-        x_sc, z_sc = firedrake.SpatialCoordinate(self.mesh)
-        self.x = firedrake.interpolate(x_sc, self.Q)
-        self.z = firedrake.interpolate(z_sc, self.Q)
-
+        
+        self.mesh = firedrake.IntervalMesh(param.n, L)
+        self.Q = firedrake.FunctionSpace(self.mesh, "DG", 1)
+        x, = firedrake.SpatialCoordinate(self.mesh)
+        
+        self.x = firedrake.interpolate(x, self.Q)
         self.bedrock, _ = bedrock(self.x, Q=self.Q)
         
         # initial sediment thickness
@@ -722,6 +893,35 @@ class sediment:
         self.Qs = icepack.interpolate(0*self.H, self.Q)
         
         
+        
+        # self.mesh1d = firedrake.IntervalMesh(param.n, L)
+        # self.mesh = firedrake.ExtrudedMesh(self.mesh1d, layers=1, name="mesh")
+
+        # # set up function space for the scalars 
+        # self.Q = firedrake.FunctionSpace(self.mesh1d, "DG", 1)
+
+        # # create scalar functions for the spatial coordinates
+        # x_sc, z_sc = firedrake.SpatialCoordinate(self.mesh)
+        # self.x = firedrake.interpolate(x_sc, self.Q)
+        # self.z = firedrake.interpolate(z_sc, self.Q)
+
+        # self.bedrock, _ = bedrock(self.x, Q=self.Q)
+        
+        # # initial sediment thickness
+        # self.H = icepack.interpolate(-sedDepth-self.bedrock, self.Q)
+        # self.H = icepack.interpolate(conditional(self.H<0, 0, self.H), self.Q)
+        
+        # # create inital functions for erosion, deposition, hillslope processes, and dH/dt
+        # self.erosionRate = icepack.interpolate(0*self.H, self.Q)
+        # self.depositionRate = icepack.interpolate(0*self.H, self.Q)
+        # self.hillslopeDiffusion = icepack.interpolate(0*self.H, self.Q)
+        # self.dHdt = icepack.interpolate(0*self.H, self.Q)
+        
+        # # create initial functions for water flux and sediment flux
+        # self.Qw = icepack.interpolate(0*self.H, self.Q)
+        # self.Qs = icepack.interpolate(0*self.H, self.Q)
+        
+    
     def transport(self, glac, dt):
         '''
         
@@ -742,59 +942,78 @@ class sediment:
         index = np.argsort(glac.x.dat.data)
         x_ = glac.x.dat.data[index]
         
-        deltaX = x_[2] # x[2] because using 2nd order finite elements
+        deltaX = x_[2] # needed to make different types of elements align...
        
         nSed = np.floor(param.Lsed/deltaX) # number of sediment grid points
         LSed = nSed*deltaX # length of sediment domain
         
-        index = np.argsort(self.x.dat.data)
-        sedH_interpolator = interp1d(self.x.dat.data[index], self.H.dat.data[index], kind='linear', fill_value='extrapolate')
-        erosionRate_interpolator = interp1d(self.x.dat.data[index], self.erosionRate.dat.data[index], kind='linear', fill_value='extrapolate')
-        depositionRate_interpolator = interp1d(self.x.dat.data[index], self.depositionRate.dat.data[index], kind='linear', fill_value='extrapolate')
+        # index = np.argsort(self.x.dat.data)
+        # sedH_interpolator = interp1d(self.x.dat.data[index], self.H.dat.data[index], kind='linear', fill_value='extrapolate')
+        # erosionRate_interpolator = interp1d(self.x.dat.data[index], self.erosionRate.dat.data[index], kind='linear', fill_value='extrapolate')
+        # depositionRate_interpolator = interp1d(self.x.dat.data[index], self.depositionRate.dat.data[index], kind='linear', fill_value='extrapolate')
+        
+        
+        sedH_interpolator = interp1d(self.x.dat.data, self.H.dat.data, kind='linear', fill_value='extrapolate')
+        erosionRate_interpolator = interp1d(self.x.dat.data, self.erosionRate.dat.data, kind='linear', fill_value='extrapolate')
+        depositionRate_interpolator = interp1d(self.x.dat.data, self.depositionRate.dat.data, kind='linear', fill_value='extrapolate')
         
         
         # new mesh and function space
-        self.mesh1d = firedrake.IntervalMesh(nSed, LSed)
-        self.mesh = firedrake.ExtrudedMesh(self.mesh1d, layers=1, name="mesh")
+        #self.mesh = firedrake.IntervalMesh(nSed, LSed)
+        self.mesh = firedrake.IntervalMesh(nSed, LSed)
+        # self.mesh = firedrake.ExtrudedMesh(self.mesh, layers=1, name="mesh")
 
         # set up function spaces for the scalars (Q) and vectors (V) for the 2D mesh
-        self.Q = firedrake.FunctionSpace(self.mesh, "CG", 2, vfamily="R", vdegree=0)
+        self.Q = firedrake.FunctionSpace(self.mesh, "DG", 1)
         
-        x_sc, z_sc = firedrake.SpatialCoordinate(self.mesh)
-        self.x = firedrake.interpolate(x_sc, self.Q)
-        self.z = firedrake.interpolate(z_sc, self.Q)
+
+        # x_sc, z_sc = firedrake.SpatialCoordinate(self.mesh)
+        x, = firedrake.SpatialCoordinate(self.mesh)
+        self.x = firedrake.interpolate(x, self.Q)
+        
+        # self.z = firedrake.interpolate(z_sc, self.Q)
 
         # interpolate sediment thickness, erosion rate, and deposition rate 
         # onto new mesh; need old values for Crank-Nicolson
         # assumes that sediment extends far enough from glacier that bedrock 
         # and sediment are flat at end of domain
-        index = np.argsort(self.x.dat.data)
-        x_tmp = self.x.dat.data[index]
+        # index = np.argsort(self.x.dat.data)
+        # x_tmp = self.x.dat.data[index]
         
-        H_tmp = sedH_interpolator(x_tmp)
-        H_xarray = xarray.DataArray(H_tmp, [x_tmp], 'x')
-        self.H = icepack.interpolate(H_xarray, self.Q)
+        self.H = firedrake.Function(self.Q)
+        self.H.dat.data[:] = sedH_interpolator(self.x.dat.data)
+
+        self.erosionRate = firedrake.Function(self.Q)
+        self.erosionRate.dat.data[:] = erosionRate_interpolator(self.x.dat.data)
         
-        erosionRate_tmp = erosionRate_interpolator(x_tmp)
-        erosionRate_xarray = xarray.DataArray(erosionRate_tmp, [x_tmp], 'x')
-        self._erosionRate = icepack.interpolate(erosionRate_xarray, self.Q)
+        self.depositionRate = firedrake.Function(self.Q)
+        self.depositionRate.dat.data[:] = depositionRate_interpolator(self.x.dat.data)
         
-        depositionRate_tmp = depositionRate_interpolator(x_tmp)
-        depositionRate_xarray = xarray.DataArray(depositionRate_tmp, [x_tmp], 'x')
-        self._depositionRate = icepack.interpolate(depositionRate_xarray, self.Q)
+        
+        
+        # H_tmp = sedH_interpolator(x_tmp)
+        # H_xarray = xarray.DataArray(H_tmp, [x_tmp], 'x')
+        # self.H = icepack.interpolate(H_xarray, self.Q)
+        
+        # erosionRate_tmp = erosionRate_interpolator(x_tmp)
+        # erosionRate_xarray = xarray.DataArray(erosionRate_tmp, [x_tmp], 'x')
+        # self._erosionRate = icepack.interpolate(erosionRate_xarray, self.Q)
+        
+        # depositionRate_tmp = depositionRate_interpolator(x_tmp)
+        # depositionRate_xarray = xarray.DataArray(depositionRate_tmp, [x_tmp], 'x')
+        # self._depositionRate = icepack.interpolate(depositionRate_xarray, self.Q)
         
         self.bedrock, _ = bedrock(self.x, Q=self.Q)        
     
     
-    
-        self.calcQw(glac.a, glac.w, glac.h) 
+        self.calcQw(glac) 
         
         
         # compute erosion rate
         bed = icepack.interpolate(self.bedrock+self.H, self.Q)
         alpha = bed.dx(0) # bed slope
 
-        self.h_eff = icepack.interpolate(paramSed.h_eff * exp(alpha), self.Q) # !!! might need some more thought !!!
+        self.h_eff = icepack.interpolate(paramSed.h_eff * exp(10*alpha)/exp(10*alpha), self.Q) # !!! might need some more thought !!!
         
         self.h_eff = icepack.interpolate(conditional(self.x>x_[-1], -(self.bedrock+self.H), self.h_eff), self.Q)
         
@@ -826,13 +1045,13 @@ class sediment:
         self.Qw = icepack.interpolate(conditional(self.x<=x_[-1], self.Qw, Qw_fjord), self.Q)
         
         
-        
-        self.calcQs(np.max(x_))
+        self.calcQs()
         
         self.depositionRate = icepack.interpolate(paramSed.w * self.Qs / self.Qw, self.Q)
         
         
         self.calcH(dt)
+        
         
         
         # now need to fix the glacier bed to account for erosion and deposition
@@ -860,14 +1079,12 @@ class sediment:
         H_.assign(self.H)
         H.assign(self.H)
         
-        theta = 1 # 0.5 = Crank-Nicolson; 0 and 1 are explicit and implicit Euler
+        # theta = 0.5 # 0.5 = Crank-Nicolson; 0 and 1 are explicit and implicit Euler
         
         # !!! check diffusion term; may need to multiply by delta_s
         LHS = ( (H-H_)/dt*v + 
-               theta*paramSed.k*(H.dx(0)+self.bedrock.dx(0))*v.dx(0) + 
-               (1-theta)*paramSed.k*(H_.dx(0)+self.bedrock.dx(0))*v.dx(0)+
-               theta*(self.erosionRate - self.depositionRate)*v + 
-               (1-theta)*(self._erosionRate - self._depositionRate)*v) * dx
+               paramSed.k*(H.dx(0)+self.bedrock.dx(0))*v.dx(0) + 
+               (self.erosionRate - self.depositionRate)*v ) * dx
         
         firedrake.solve(LHS == 0, H)
         
@@ -879,7 +1096,7 @@ class sediment:
         icepack.interpolate(conditional(self.H<-self.bedrock-5, self.H, -5), self.Q) # cheap hack to keep moraine submerged !!!
         
         
-    def calcQs(self, L):
+    def calcQs(self):
         '''
         Calculates the width-averaged sediment flux [m^2 a^{-1}].
 
@@ -891,91 +1108,115 @@ class sediment:
         # into functions for solving the ODE. Note that we only need every 
         # other data point since we are using quadratic functions (at least I
         # think that is why the arrays contain 2n+1 points).
-        index = np.argsort(self.x.dat.data)
-        x = self.x.dat.data[index][::2]
-        H = self.H.dat.data[index][::2]
-        Qw = self.Qw.dat.data[index][::2]
-        erosionRate = self.erosionRate.dat.data[index][::2]
-        deltaS = self.delta_s.dat.data[index][::2]
+        # index = np.argsort(self.x.dat.data)
+        # x = self.x.dat.data[index][::2]
+        # H = self.H.dat.data[index][::2]
+        # Qw = self.Qw.dat.data[index][::2]
+        # erosionRate = self.erosionRate.dat.data[index][::2]
+        # deltaS = self.delta_s.dat.data[index][::2]
+        
+        # First extract arrays from sediment object that will be shortened.
+            # x_ = self.x.dat.data
+            # H_ = self.H.dat.data        
+            # Qw_ = self.Qw.dat.data
+            # erosionRate_ = self.erosionRate.dat.data
+            # deltaS_ = self.delta_s.dat.data
+            
+            
+            # # Determine the domain to be used.
+            # index = H_.nonzero()[0] # grid points that have sediment
+            # #index = np.concatenate(([index[0]-1], index)) # 
+            # ind0 = index[0] # index of first grid point with sediment
+            # x0 = x_[ind0] # terminus or first point of nonzero thickness
+            
+            
+            # xL = np.max(self.x.dat.data) # last grid point
+            
+            # # Create shortened xarrays for putting back into functions.
+            # # H_xarray = xarray.DataArray(H[index], [x[index]], 'x')
+            # # Qw_xarray = xarray.DataArray(Qw[index], [x[index]], 'x')
+            # # erosionRate_xarray = xarray.DataArray(erosionRate[index], [x[index]], 'x')
+            # # deltaS_xarray = xarray.DataArray(deltaS[index], [x[index]], 'x')
+            
+            # # Create new mesh and set up new function space.       
+            # # First determine grid spacing and number of grid points in the new 
+            # # mesh.
+            # #deltaX = x_[1] 
+            # n = len(index)-1 #int((xL-x0)/deltaX)+1
+            
+            # mesh = firedrake.IntervalMesh(n, x0, right=xL)
+            # Q = firedrake.FunctionSpace(mesh, "DG", 1)
+            # x, = firedrake.SpatialCoordinate(mesh)
+            
+            # x = firedrake.interpolate(x, Q)
         
         
+        # mesh1d = firedrake.IntervalMesh(n, x0, right=xL)
+        # mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
+        # Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
         
-        # Determine the domain to be used.
-        index = H.nonzero()[0] # grid points that have sediment
-        ind0 = index[0] # index of first grid point with sediment
-        x0 = np.min([L, x[ind0]]) # terminus or first point of nonzero thickness
-        
-        if x0==L:
-            index = np.array([i for i, x in enumerate(x) if x > L])
-        
-        xL = np.max(self.x.dat.data) # last grid point
-        
-        # Create shortened xarrays for putting back into functions.
-        H_xarray = xarray.DataArray(H[index], [x[index]], 'x')
-        Qw_xarray = xarray.DataArray(Qw[index], [x[index]], 'x')
-        erosionRate_xarray = xarray.DataArray(erosionRate[index], [x[index]], 'x')
-        deltaS_xarray = xarray.DataArray(deltaS[index], [x[index]], 'x')
-        
-        # Create new mesh and set up new function space.       
-        # First determine grid spacing and number of grid points in the new 
-        # mesh.
-        deltaX = x[1] 
-        n = int((xL-x0)/deltaX)
-        
-        mesh1d = firedrake.IntervalMesh(n, x0, right=xL)
-        mesh = firedrake.ExtrudedMesh(mesh1d, layers=1, name="mesh")
-        Q = firedrake.FunctionSpace(mesh, "CG", 2, vfamily="R", vdegree=0)
-        
-        x_sc, z_sc = firedrake.SpatialCoordinate(mesh)
-        x = firedrake.interpolate(x_sc, Q)
+        # x_sc, z_sc = firedrake.SpatialCoordinate(mesh)
+        # x = firedrake.interpolate(x_sc, Q)
 
-        # Put xarrays back into firedrake functions.
-        H = icepack.interpolate(H_xarray, Q)
-        Qw = icepack.interpolate(Qw_xarray, Q)
-        erosionRate = icepack.interpolate(erosionRate_xarray, Q)
-        deltaS = icepack.interpolate(deltaS_xarray, Q)
+        # Put arrays back into firedrake functions.
+            # H = firedrake.Function(Q)
+            # H.dat.data[:] = H_[index]
+            
+            # Qw = firedrake.Function(Q)
+            # Qw.dat.data[:] = Qw_[index]
+            
+            # erosionRate = firedrake.Function(Q)
+            # erosionRate.dat.data[:] = erosionRate_[index]
+            
+            # deltaS = firedrake.Function(Q)
+            # deltaS.dat.data[:] = deltaS_[index]
         
         
-        # For some reason, the last grid point is often set to nan. Fix this.
-        H.dat.data[-1] = H_xarray[-1]
-        Qw.dat.data[-1] = Qw_xarray[-1]
-        erosionRate.dat.data[-1] = erosionRate_xarray[-1]
-        deltaS.dat.data[-1] = deltaS_xarray[-1]
+        # H = icepack.interpolate(H_xarray, Q)
+        # Qw = icepack.interpolate(Qw_xarray, Q)
+        # erosionRate = icepack.interpolate(erosionRate_xarray, Q)
+        # deltaS = icepack.interpolate(deltaS_xarray, Q)
         
-        u = firedrake.TrialFunction(Q) # unknown that we wish to determine
         
-        v = firedrake.TestFunction(Q)
+        # # For some reason, the last grid point is often set to nan. Fix this.
+        # H.dat.data[-1] = H_xarray[-1]
+        # Qw.dat.data[-1] = Qw_xarray[-1]
+        # erosionRate.dat.data[-1] = erosionRate_xarray[-1]
+        # deltaS.dat.data[-1] = deltaS_xarray[-1]
+        
+        u = firedrake.TrialFunction(self.Q) # unknown that we wish to determine
+        
+        v = firedrake.TestFunction(self.Q)
 
-        
-        
         
         # left and right hand sides of variational form
-        LHS = u * ( -v.dx(0) + paramSed.w/Qw*v ) * dx
-        RHS = (erosionRate) * v * dx # ! includes 1 mm/yr bedrock erosion
+        LHS = u * ( -v.dx(0) + paramSed.w/self.Qw*v ) * dx
+        RHS = (self.erosionRate) * v * dx # ! includes 1 mm/yr bedrock erosion
         
-        Qs = firedrake.Function(Q) # create empty function to hold the solution
+        Qs = firedrake.Function(self.Q) # create empty function to hold the solution
         
-        Qs_in = np.min([x0, L])*1 # assume constant erosion rate over glacier-covered area
         
-        bc = firedrake.DirichletBC(Q, (Qs_in), 1) 
+        bc = firedrake.DirichletBC(self.Q, (0), 1) 
         
         
         firedrake.solve(LHS == RHS, Qs, bcs=[bc])
+        self.Qs = Qs
         
-        Qs_index = np.argsort(x.dat.data)
         
+        # Qs_interpolator = interp1d(x.dat.data, Qs.dat.data, fill_value = 0, bounds_error=False)
         
-        Qs_interpolator = interp1d(x.dat.data[Qs_index], Qs.dat.data[Qs_index], fill_value = 0, bounds_error=False)
+        # self.Qs = firedrake.Function(self.Q)
+        # self.Qs.dat.data[:] = Qs_interpolator(self.x.dat.data)
         
-        Qs_xarray = xarray.DataArray(Qs_interpolator(self.x.dat.data), [self.x.dat.data], 'x')
-        self.Qs = icepack.interpolate(Qs_xarray, self.Q)
+        # Qs_xarray = xarray.DataArray(Qs_interpolator(self.x.dat.data), [self.x.dat.data], 'x')
+        # self.Qs = icepack.interpolate(Qs_xarray, self.Q)
         
         
         
     
     
         
-    def calcQw(self, a, w, h):
+    def calcQw(self, glac):
         '''
         Calculates width-averaged runoff assuming 
         Q_w = 1/w * \int (a_max - a) * w * dx.
@@ -994,16 +1235,16 @@ class sediment:
     
         '''    
         
-        Q = a.function_space()
+        Q = glac.Q
         u = firedrake.TrialFunction(Q) # unknown that we wish to determine
     
         v = firedrake.TestFunction(Q)
     
-        iceMask = icepack.interpolate(conditional(h<=constant.hmin+1e-4, 0, 1), Q)
+        iceMask = icepack.interpolate(conditional(glac.h<=constant.hmin+1e-4, 0, 1), Q)
     
         # left and right hand sides of variational form
         LHS = u.dx(0) * v * dx
-        RHS = ( (param.a_max-a)  * iceMask ) * w * v * dx # the thing that we are integrating
+        RHS = ( (param.a_max-glac.a)  * iceMask ) * glac.w * v * dx # the thing that we are integrating
     
         Qw = firedrake.Function(Q) # create empty function to hold the solution
     
@@ -1011,14 +1252,23 @@ class sediment:
     
         firedrake.solve(LHS == RHS, Qw, bcs=[bc]) # runoff in m^3 a^{-1}
         
-        Qw = icepack.interpolate(Qw/w, Q) # width-averaged runoff on the glacier grid
+        Qw = icepack.interpolate(Qw/glac.w, Q) # width-averaged runoff on the glacier grid
+        
+        index = np.argsort(glac.x.dat.data)
+    
+        # Qw is on the glacier grid points, staggered half a point away from the sediment grid points
+        # so need to interpolate 
+        Qw_dat = (Qw.dat.data[index][:-1]+Qw.dat.data[index][1:])/2
         
         # determine runoff on sediment domain
         # for erosion purposes, no runoff beyond the end of the glacier
         # however, for deposition we need to account for transport by fjord 
         # circulation, which is included later
-        self.Qw = icepack.interpolate(0*self.bedrock, self.Q)
-        self.Qw.dat.data[:len(Qw.dat.data)] = Qw.dat.data
+        
+        self.Qw = firedrake.Function(self.Q) # populates with zeros
+        self.Qw.dat.data[1:len(Qw_dat)+1] = Qw_dat
+        # self.Qw = icepack.interpolate(0*self.bedrock, self.Q)
+        # self.Qw.dat.data[:len(Qw.dat.data)] = Qw.dat.data
         
         return(Qw)        
         
@@ -1149,6 +1399,121 @@ def basicPlot(glac, sed, basename, time):
     
     # # axes[2,1].plot(sed.x*1e-3, sed.dHdt)
     axes[3,1].plot(sed.x.dat.data*1e-3, sed.H.dat.data, 'k')
+
+    
+
+    plt.savefig(basename + '.png', format='png', dpi=150)
+    plt.close()
+    plt.ion()
+    
+    
+
+
+def basicPlotFD(glac, sed, basename, time):
+    
+    plt.ioff()
+    
+    index = np.argsort(glac.x.dat.data)
+    x = glac.x.dat.data[index]*1e-3
+    h = glac.h.dat.data[index]
+    s = glac.s.dat.data[index]
+    u = icepack.depth_average(glac.u_bar).dat.data[index]
+    b = glac.b.dat.data[index]
+    w = glac.w.dat.data[index]*1e-3
+    ub = glac.ub.dat.data[index]
+    
+    L = x[-1]
+    
+    fig, axes = plt.subplots(4, 2)
+    fig.set_figwidth(10)
+    fig.set_figheight(8)
+    
+    xlim = np.array([0,60])
+    
+    axes[0,0].set_xlabel('Longitudinal Coordinate [km]')
+    axes[0,0].set_ylabel('Elevation [m]')
+    axes[0,0].set_xlim(np.array([20,60]))
+    axes[0,0].set_ylim(np.array([-500,1000]))
+    axes[0,0].annotate("{:.0f}".format(np.floor(time)) + ' yrs', (58, 800), ha='right', va='top')
+    
+    
+    axes[1,0].set_xlabel('Longitudinal Coordinate [km]')
+    axes[1,0].set_ylabel('Transverse Coordinate [km]')
+    axes[1,0].set_xlim(xlim)
+    axes[1,0].set_ylim(np.array([-10, 10]))
+    
+    axes[2,0].set_xlabel('Longitudinal Coordinate [km]')
+    axes[2,0].set_ylabel('Speed [m/yr]')
+    axes[2,0].set_xlim(xlim)
+    axes[2,0].set_ylim(np.array([0,3000]))
+    
+    axes[0,1].set_xlabel('Longitudinal Coordinate [km]')
+    axes[0,1].set_ylabel('Flux per width [km$^2$ a$^{-1}$]')
+    axes[0,1].set_xlim(xlim)
+    axes[0,1].set_ylim(np.array([-0.1,0.6]))
+    
+    axes[1,1].set_xlabel('Longitudinal coordinate [km]')
+    axes[1,1].set_ylabel('Rate [m a$^{-1}$]')
+    axes[1,1].set_xlim(xlim)
+    axes[1,1].set_ylim([-10,70])
+    
+    axes[2,1].set_xlabel('Longitudinal coordinate [km]')
+    axes[2,1].set_ylabel('Rate [m a$^{-1}$]')
+    axes[2,1].set_xlim(xlim)
+    axes[2,1].set_ylim([-5, 5])
+    
+    axes[3,1].set_xlabel('Longitudinal coordinate [km]')
+    axes[3,1].set_ylabel('Sediment thickness [m]')
+    axes[3,1].set_xlim(xlim)
+    axes[3,1].set_ylim([0,300])
+    
+    plt.tight_layout()
+    
+
+    
+    # sealevel = icepack.interpolate(0*sed.bedrock, sed.Q)
+    # sealevel = icepack.interpolate(conditional(sed.bedrock>0, sed.bedrock, 0), sed.Q)
+    sealevel = copy.deepcopy(sed.bedrock)
+    sealevel[sealevel<0] = 0
+    
+    axes[0,0].fill_between(sed.x*1e-3, sed.bedrock, sed.bedrock+sed.H, color='saddlebrown')
+    axes[0,0].fill_between(sed.x*1e-3, sealevel, sed.bedrock+sed.H, color='cornflowerblue')    
+    axes[0,0].plot(np.concatenate((x,x[::-1])), np.concatenate((s,b[::-1])), 'k')
+    axes[0,0].fill_between(x, s, b, color='w', linewidth=1)
+    axes[0,0].plot(sed.x*1e-3, sed.bedrock, 'k')
+    
+    sed.w = width(sed.x)
+    
+    axes[1,0].plot(np.array([L,L]), np.array([w[-1]/2,-w[-1]/2]), 'k')
+    axes[1,0].plot(sed.x*1e-3, sed.w/2*1e-3, 'k')
+    axes[1,0].plot(sed.x*1e-3, -sed.w/2*1e-3, 'k')
+    axes[1,0].fill_between(sed.x*1e-3, sed.w/2*1e-3, -sed.w/2*1e-3, color='cornflowerblue')
+    axes[1,0].fill_between(x, w/2, -w/2, color='white')
+    
+    
+    axes[2,0].plot(x, u, 'k', label='average velocity')
+    axes[2,0].plot(x, ub, 'k--', label='balance velocity')
+    axes[2,0].legend(loc='upper left')
+    
+    
+    axes[3,0].axis('off')
+    
+    axes[0,1].plot(sed.x*1e-3, sed.Qw*1e-6, 'k', label='runoff')
+    axes[0,1].plot(sed.x*1e-3, sed.Qs*1e-5, 'k:', label=r'sediment flux ($\times 10$)')
+    axes[0,1].legend(loc='upper left')
+    
+    
+    axes[1,1].plot(sed.x*1e-3, sed.erosionRate, 'k', label='erosion rate')
+    axes[1,1].plot(sed.x*1e-3, sed.depositionRate, 'k--', label='deposition rate')
+    axes[1,1].legend(loc='upper left')
+    
+    
+    # axes[2,1].plot(sed.x*1e-3, sed.hillslope, 'k', label='hillslope processes')
+    axes[2,1].plot(sed.x*1e-3, sed.dHdt, 'k', label='$\partial H_s/\partial t$')
+    axes[2,1].legend(loc='upper left')
+    
+    # # axes[2,1].plot(sed.x*1e-3, sed.dHdt)
+    axes[3,1].plot(sed.x*1e-3, sed.H, 'k')
 
     
 

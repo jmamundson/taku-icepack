@@ -58,8 +58,6 @@ for step in tqdm.trange(num_timesteps):
         friction = constant.C,
         U0 = constant.U0,
         side_friction = side_drag(glac.w),
-        x = glac.x, # x and b are only needed for Schoof friction, depending on how it is parameterized
-        b = glac.b
     )
     
     # determine mass balance rate
@@ -80,9 +78,6 @@ for step in tqdm.trange(num_timesteps):
     
     glac.h = icepack.interpolate(area/glac.w, glac.Q)
     
-    # L_new = L + glac.u.dat.data[-1]*param.dt
-    
-    # glac.regrid(param.n, L, L_new, sed)
     
     # determine surface elevation
     glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.bed)

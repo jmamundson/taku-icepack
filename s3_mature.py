@@ -10,11 +10,11 @@ from firedrake import max_value
 import tqdm
 
 import func
-from func import schoof_approx_friction, side_drag, constants, params, glacier, sediment
+from func import schoof_approx_friction, side_drag, constants, params, glacier, sedimentFD
 
 constant = constants()
 param = params()
-
+import pickle
 import glob
 
 #%% 
@@ -47,7 +47,7 @@ _, glac.tideLine = func.bedrock(glac.x, Q=glac.Q) #
 # (also requires that terminus be in the water) 
 # sed = func.sedModel(param.Lsed, -b.dat.data[-1]-10)
 # sed.H[sed.H<2] = 2
-sed = sediment(-glac.b.dat.data[-1]+10) # initialize the sediment model
+sed = sedimentFD(-glac.b.dat.data[-1]-10) # initialize the sediment model
 # sed.H.dat.data[sed.H.dat.data>0] = 0
 
 # set up hybrid model solver with custom friction function
@@ -83,8 +83,6 @@ for step in tqdm.trange(num_timesteps):
         friction = constant.C,
         U0 = constant.U0,
         side_friction = side_drag(glac.w),
-        x = glac.x, # x and b are only needed for Schoof friction, depending on how it is parameterized
-        b = glac.b
     )
     
     # determine mass balance rate
@@ -113,8 +111,8 @@ for step in tqdm.trange(num_timesteps):
     glac.s = icepack.compute_surface(thickness = glac.h, bed = glac.b)
 
     # find new terminus position
-    L_new = np.max([glac.massFlux(), glac.tideLine])
-    # L_new = np.max([glac.HAF(), glac.tideLine])
+    # L_new = np.max([glac.massFlux(), glac.tideLine])
+    L_new = np.max([glac.HAF(), glac.tideLine])
     # L_new = np.max([glac.HAFmodified(), glac.tideLine])
     # L_new = np.max([glac.crevasseDepth(), glac.tideLine])
     # L_new = np.max([glac.eigencalving(), glac.tideLine])
@@ -160,15 +158,19 @@ for step in tqdm.trange(num_timesteps):
         checkpoint.save_function(glac.w, name="width")
 
     basenameSed = './results/mature/matureSed_' + "{:04}".format(step)
-    with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
-        checkpoint.save_mesh(sed.mesh)
-        checkpoint.save_function(sed.x, name="position")
-        checkpoint.save_function(sed.H, name="thickness")
-        checkpoint.save_function(sed.bedrock, name="bedrock")
-        checkpoint.save_function(sed.erosionRate, name="erosionRate")
-        checkpoint.save_function(sed.depositionRate, name="depositionRate")
-        checkpoint.save_function(sed.dHdt, name="dHdt")
-        checkpoint.save_function(sed.Qw, name="runoff")
-        checkpoint.save_function(sed.Qs, name="sedimentFlux")
+    with open(basenameSed + '.pickle', 'wb') as file:
+        pickle.dump(sed, file)
+        file.close()    
+    
+    # with firedrake.CheckpointFile(basename + '.h5', "w") as checkpoint:
+    #     checkpoint.save_mesh(sed.mesh)
+    #     checkpoint.save_function(sed.x, name="position")
+    #     checkpoint.save_function(sed.H, name="thickness")
+    #     checkpoint.save_function(sed.bedrock, name="bedrock")
+    #     checkpoint.save_function(sed.erosionRate, name="erosionRate")
+    #     checkpoint.save_function(sed.depositionRate, name="depositionRate")
+    #     checkpoint.save_function(sed.dHdt, name="dHdt")
+    #     checkpoint.save_function(sed.Qw, name="runoff")
+    #     checkpoint.save_function(sed.Qs, name="sedimentFlux")
 
-    func.basicPlot(glac, sed, basename, time[step])
+    func.basicPlotFD(glac, sed, basename, time[step])
